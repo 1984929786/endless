@@ -27,7 +27,9 @@ jobs:
       - name: Install deps
         run: |
           pip install -e ./engine/python 2>&1 | tail -5
+          pip install -e "./engine/python[convert]" 2>&1 | tail -10
           pip install huggingface_hub requests 2>&1 | tail -3
+          python -c "import transformers,sys; print('transformers', transformers.__version__)"
 
       - name: Check model size on hub
         run: |
