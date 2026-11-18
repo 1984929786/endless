@@ -148,6 +148,7 @@ class ModelBridge(private val context: Context) {
                     onDone(false, lastError); return@execute
                 }
                 modelReady = true
+                CactusEngineHolder.currentHandle = handle
                 Log.i(TAG, "模型加载成功 handle=$handle 耗时 ${cost}ms")
                 onDone(true, "加载成功，耗时 ${cost}ms")
             } catch (t: Throwable) {
