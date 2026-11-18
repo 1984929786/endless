@@ -75,7 +75,7 @@ class MainActivity : AppCompatActivity() {
             status.text = "加载中…（首次可能要 1~3 分钟，内存紧张时更久）"
             btnLoad.isEnabled = false
             log("开始加载模型")
-            bridge.loadModelAsync { ok, msg ->
+            bridge.loadModelAsync(onProgress = { m -> ui.post { status.text = m; log(m) } }) { ok, msg ->
                 ui.post {
                     btnLoad.isEnabled = true
                     status.text = if (ok) "✓ $msg" else "✗ $msg"
