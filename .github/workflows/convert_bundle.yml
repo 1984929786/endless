@@ -48,7 +48,7 @@ jobs:
         run: |
           cat > /tmp/cv.py <<'PYEOF'
           import sys
-          sys.argv = ['cactus', 'convert', 'Qwen/Qwen3.5-2B', '--bits', '4', '--reconvert']
+          sys.argv = ['cactus', 'convert', 'Qwen/Qwen2.5-0.5B', '--bits', '4', '--reconvert']
           from cactus.cli import main
           main()
           PYEOF
