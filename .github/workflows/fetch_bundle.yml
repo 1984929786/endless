@@ -1,6 +1,6 @@
 name: Fetch Cactus Bundle
 
-on:
+"on":
   workflow_dispatch:
 
 jobs:
