@@ -16,48 +16,56 @@ jobs:
       - name: Clone engine repo
         run: |
           git clone --depth 1 https://github.com/cactus-compute/engine
+          echo "--- 根目录 ---"
           ls engine
           echo "--- python 目录 ---"
           ls engine/python
+          echo "--- python 里有没有 setup/pyproject ---"
+          ls engine/python | grep -iE "setup|pyproject|requirements" || echo "无"
 
       - name: Install python package
         run: |
-          cd engine
-          pip install -e . 2>&1 | tail -20 || pip install -r requirements.txt 2>&1 | tail -20 || true
-          pip list | grep -i cactus || true
-
-      - name: Show CLI help
-        run: |
-          cd engine
-          python -m cactus.cli --help 2>&1 | head -40 || \
-          python python/cactus/__main__.py --help 2>&1 | head -40 || \
-          python -m cactus --help 2>&1 | head -40
+          set -x
+          if [ -f engine/python/pyproject.toml ] || [ -f engine/python/setup.py ]; then
+            pip install -e ./engine/python 2>&1 | tail -15
+          fi
+          pip install huggingface_hub requests 2>&1 | tail -5
+          python -c "import sys; sys.path.insert(0,'engine/python'); import cactus; print('cactus ok', cactus.__file__)" 2>&1 | tail -5
 
       - name: Download bundle
+        working-directory: engine/python
         run: |
-          cd engine
           set +e
-          python -m cactus.cli download Cactus-Compute/Qwen3.5-2B --bits 4 2>&1 | tail -50
+          python -m cactus.cli download Cactus-Compute/Qwen3.5-2B --bits 4 2>&1 | tail -40
           echo "exit=$?"
-          echo "=== weights 目录 ==="
-          ls -la weights/ 2>/dev/null || echo "没有 weights"
+          echo "=== 找权重 ==="
+          ls -la ../weights/ 2>/dev/null || ls -la ~/.cache/cactus/weights/ 2>/dev/null || echo "都没找到"
 
       - name: Inspect bundle
         run: |
-          echo "=== bundle 结构 ==="
-          find . -name "manifest.json" -path "*components*" 2>/dev/null | head
-          find . -maxdepth 6 -type d -name "*qwen*" 2>/dev/null | head
-          if [ -d engine/weights ]; then
-            du -sh engine/weights/* 2>/dev/null
-            echo "--- 一层内容 ---"
-            ls -la engine/weights/*/ 2>/dev/null | head -30
-          fi
+          echo "=== 候选目录 ==="
+          for d in engine/weights ~/.cache/cactus/weights; do
+            if [ -d "$d" ]; then echo "--- $d ---"; du -sh "$d"/*; fi
+          done
+          echo "=== manifest 位置 ==="
+          find engine ~/.cache -name "manifest.json" 2>/dev/null | head
+          echo "=== bundle 内部 ==="
+          find engine ~/.cache -name "manifest.json" 2>/dev/null | head -1 | while read m; do
+            echo "manifest: $m"
+            d=$(dirname $(dirname "$m"))
+            echo "bundle dir: $d"
+            ls -la "$d"
+            echo "--- components ---"
+            ls -la "$d/components" | head -20
+          done
 
       - name: Upload bundle
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: cactus-bundle
-          path: engine/weights/
+          path: |
+            engine/weights/
+            /home/runner/.cache/cactus/weights/
           if-no-files-found: warn
           retention-days: 3
