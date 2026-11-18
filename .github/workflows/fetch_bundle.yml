@@ -3,7 +3,7 @@ name: Fetch Cactus Bundle
 on:
   push:
     paths:
-      - 'trigger-fetch/**'
+      - trigger-fetch/**
   workflow_dispatch:
 
 jobs:
@@ -17,45 +17,36 @@ jobs:
           python-version: '3.12'
 
       - name: Clone engine repo
-        run: |
-          git clone --depth 1 https://github.com/cactus-compute/engine
-          ls engine/python | head -20
+        run: git clone --depth 1 https://github.com/cactus-compute/engine
 
       - name: Install python package
         run: |
           pip install -e ./engine/python 2>&1 | tail -8
           pip install huggingface_hub requests 2>&1 | tail -3
 
+      - name: Write download script
+        run: |
+          cat > /tmp/dl.py <<'PYEOF'
+          import sys
+          sys.argv = ['cactus', 'download', 'Cactus-Compute/Qwen3.5-2B', '--bits', '4']
+          from cactus.cli import main
+          main()
+          PYEOF
+          echo written
+
       - name: Download bundle
         working-directory: engine
         run: |
-          set +e
-          python -c "
-import sys
-sys.argv = ['cactus', 'download', 'Cactus-Compute/Qwen3.5-2B', '--bits', '4']
-from cactus.cli import main
-main()
-" 2>&1 | tail -40
+          python /tmp/dl.py 2>&1 | tail -40 || true
           echo "=== weights ==="
-          ls -la weights/ 2>/dev/null || echo "无 weights"
+          ls -la weights/ 2>/dev/null || echo "no weights"
 
       - name: Inspect bundle
         run: |
-          for d in engine/weights ~/.cache/cactus/weights; do
-            [ -d "$d" ] && { echo "--- $d ---"; du -sh "$d"/*; }
+          for d in engine/weights /home/runner/.cache/cactus/weights; do
+            if [ -d "$d" ]; then echo "--- $d ---"; du -sh "$d"/* ; fi
           done
-          echo "=== manifest ==="
-          find engine ~/.cache -name "manifest.json" 2>/dev/null | head -3
-          echo "=== bundle 内部布局 ==="
-          find engine ~/.cache -name "manifest.json" 2>/dev/null | head -1 | while read m; do
-            d=$(dirname $(dirname "$m"))
-            echo "bundle: $d"
-            ls -la "$d"
-            echo "--- components ---"
-            ls -la "$d/components" 2>/dev/null | head -20
-            echo "--- 总大小 ---"
-            du -sh "$d"
-          done
+          find engine /home/runner/.cache -name manifest.json 2>/dev/null | head -3
 
       - name: Upload bundle
         if: always()
