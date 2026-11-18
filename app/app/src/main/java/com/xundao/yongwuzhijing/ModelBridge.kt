@@ -42,24 +42,98 @@ class ModelBridge(private val context: Context) {
         private set
 
     /**
-     * 模型目录：优先用 App 私有目录下的 models/<name>，
-     * 没有就退回外部存储 /sdcard/Download/qwen35-2b-int4（调试用）
+     * 模型目录解析，三级回退：
+     * 1. 私有目录 models/current 已经有 bundle -> 直接用
+     * 2. APK assets 里有 bundle -> 首次启动复制到私有目录
+     * 3. 调试期外部存储 -> /sdcard/Download/qwen35-2b-int4
      */
-    private fun resolveModelDir(): File {
+    private fun resolveModelDir(progress: (String) -> Unit = {}): File {
         val current = File(context.filesDir, "models/current")
-        if (current.isDirectory) {
-            val f = current.listFiles()
-            if (f != null && f.any { it.name.endsWith(".weights") }) return current
+
+        // 已就绪
+        if (isUsableModelDir(current)) return current
+
+        // 从 assets 搬运
+        if (hasAssetModel()) {
+            progress("首次启动，正在释放内置模型（约 1.4GB，请稍候）")
+            copyModelFromAssets(current, progress)
+            if (isUsableModelDir(current)) return current
+            progress("内置模型释放后仍不可用，尝试外部目录")
         }
+
         val ext = File("/storage/emulated/0/Download/qwen35-2b-int4")
-        if (ext.isDirectory) return ext
+        if (isUsableModelDir(ext)) return ext
+
         return current
     }
 
-    fun loadModelAsync(onDone: (Boolean, String) -> Unit) {
+    /** 判断一个目录是不是可用的模型目录 */
+    private fun isUsableModelDir(dir: File): Boolean {
+        if (!dir.isDirectory) return false
+        if (File(dir, "components/manifest.json").isFile) return true
+        val files = dir.listFiles() ?: return false
+        return files.any { it.name.endsWith(".weights") }
+    }
+
+    /** APK 的 assets 里有没有内置模型 */
+    private fun hasAssetModel(): Boolean = try {
+        context.assets.list("models")?.isNotEmpty() == true
+    } catch (t: Throwable) { false }
+
+    /**
+     * 把 assets/models 递归复制到私有目录。
+     * 先写到 .staging 再原子改名，避免中途被杀留下半截目录。
+     */
+    private fun copyModelFromAssets(target: File, progress: (String) -> Unit) {
+        val staging = File(context.filesDir, "models/.staging")
+        if (staging.exists()) staging.deleteRecursively()
+        staging.mkdirs()
+
+        var blocks = 0
+        var bytes = 0L
+        val buf = ByteArray(1 shl 20)
+
+        fun walk(assetPath: String, dest: File) {
+            val list = context.assets.list(assetPath) ?: return
+            if (list.isEmpty()) {
+                dest.parentFile?.mkdirs()
+                context.assets.open(assetPath).use { input ->
+                    FileOutputStream(dest).use { out ->
+                        while (true) {
+                            val n = input.read(buf)
+                            if (n <= 0) break
+                            out.write(buf, 0, n)
+                            bytes += n
+                            blocks++
+                            if (blocks % 8000 == 0) progress("释放中：${bytes / 1048576}MB")
+                        }
+                    }
+                }
+                return
+            }
+            dest.mkdirs()
+            for (child in list) {
+                val childAsset = if (assetPath.isEmpty()) child else "$assetPath/$child"
+                walk(childAsset, File(dest, child))
+            }
+        }
+
+        walk("models", staging)
+
+        if (target.exists()) target.deleteRecursively()
+        target.parentFile?.mkdirs()
+        if (!staging.renameTo(target)) {
+            target.mkdirs()
+            staging.copyRecursively(target, overwrite = true)
+            staging.deleteRecursively()
+        }
+        progress("模型就绪：${bytes / 1048576}MB")
+        Log.i(TAG, "模型释放完成 ${bytes / 1048576}MB -> ${target.absolutePath}")
+    }
+    fun loadModelAsync(onProgress: (String) -> Unit = {}, onDone: (Boolean, String) -> Unit) {
         pool.execute {
             try {
-                val dir = resolveModelDir()
+                val dir = resolveModelDir { msg -> Log.i(TAG, msg); onProgress(msg) }
                 Log.i(TAG, "加载模型: ${dir.absolutePath}")
                 if (!dir.isDirectory) {
                     lastError = "模型目录不存在: ${dir.absolutePath}"
