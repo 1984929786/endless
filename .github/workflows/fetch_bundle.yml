@@ -6,55 +6,58 @@ on:
 jobs:
   fetch:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 180
     steps:
       - name: Setup python
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
-      - name: Install deps
+      - name: Clone engine repo
         run: |
-          sudo apt-get update
-          sudo apt-get install -y cmake build-essential libcurl4-openssl-dev
+          git clone --depth 1 https://github.com/cactus-compute/engine
+          ls engine
+          echo "--- python 目录 ---"
+          ls engine/python
 
-      - name: Clone cactus
+      - name: Install python package
         run: |
-          git clone --depth 1 https://github.com/cactus-compute/cactus
-          ls cactus
+          cd engine
+          pip install -e . 2>&1 | tail -20 || pip install -r requirements.txt 2>&1 | tail -20 || true
+          pip list | grep -i cactus || true
 
-      - name: Setup cactus
-        working-directory: cactus
+      - name: Show CLI help
         run: |
-          cat setup | head -40
-          source ./setup
-          which cactus || true
-          cactus --help 2>&1 | head -30
+          cd engine
+          python -m cactus.cli --help 2>&1 | head -40 || \
+          python python/cactus/__main__.py --help 2>&1 | head -40 || \
+          python -m cactus --help 2>&1 | head -40
 
       - name: Download bundle
-        working-directory: cactus
         run: |
-          source ./setup
+          cd engine
           set +e
-          cactus download Cactus-Compute/Qwen3.5-2B --bits 4 2>&1 | tail -40
+          python -m cactus.cli download Cactus-Compute/Qwen3.5-2B --bits 4 2>&1 | tail -50
           echo "exit=$?"
+          echo "=== weights 目录 ==="
+          ls -la weights/ 2>/dev/null || echo "没有 weights"
 
-      - name: Inspect result
+      - name: Inspect bundle
         run: |
-          echo "=== 找 bundle 目录 ==="
-          find / -name "manifest.json" -path "*components*" 2>/dev/null | head -10
-          echo "=== cactus 目录树 ==="
-          find ~ -maxdepth 4 -type d 2>/dev/null | grep -iE "weights|cactus" | head -30
-          echo "=== 磁盘 ==="
-          df -h /
+          echo "=== bundle 结构 ==="
+          find . -name "manifest.json" -path "*components*" 2>/dev/null | head
+          find . -maxdepth 6 -type d -name "*qwen*" 2>/dev/null | head
+          if [ -d engine/weights ]; then
+            du -sh engine/weights/* 2>/dev/null
+            echo "--- 一层内容 ---"
+            ls -la engine/weights/*/ 2>/dev/null | head -30
+          fi
 
       - name: Upload bundle
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: cactus-bundle
-          path: |
-            ~/.cactus/**
-            weights/**
+          path: engine/weights/
           if-no-files-found: warn
           retention-days: 3
