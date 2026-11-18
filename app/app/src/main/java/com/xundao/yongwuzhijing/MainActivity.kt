@@ -102,7 +102,7 @@ class MainActivity : AppCompatActivity() {
                 history.put(JSONObject().put("role", "user").put("content", "你好，请用一句话介绍你自己。"))
                 val opts = JSONObject().put("max_tokens", 256).put("temperature", 0.7)
                     .put("auto_handoff", false)
-                val raw = CactusEngine.complete(bridge.handle, history.toString(), opts.toString())
+                val raw = CactusEngine.complete(bridge.handle, history.toString(), opts.toString(), null)
                 val cost = System.currentTimeMillis() - t0
                 ui.post {
                     btnChat.isEnabled = true
