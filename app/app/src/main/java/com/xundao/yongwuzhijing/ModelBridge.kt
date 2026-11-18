@@ -228,8 +228,8 @@ class ModelBridge(private val context: Context) {
         // 采样参数
         val opts = JSONObject()
         opts.put("max_tokens", req.optInt("max_tokens", 1024))
-        opts.put("temperature", req.optDouble("temperature", 0.7))
-        opts.put("top_p", req.optDouble("top_p", 0.95))
+        opts.put("temperature", numOr(req, "temperature", 0.7))
+        opts.put("top_p", numOr(req, "top_p", 0.95))
         opts.put("min_p", 0.05)
         opts.put("repetition_penalty", 1.05)
         // 首版纯本地：绝不允许云端兜底，否则对话内容会外泄
@@ -304,7 +304,7 @@ class ModelBridge(private val context: Context) {
             .put("choices", JSONArray().put(choice))
             .put("usage", usage)
 
-        Log.i(TAG, "推理完成 ${System.currentTimeMillis() - t0}ms, ${c.optDouble("decode_tps", 0.0)} tok/s, ${c.optDouble("ram_usage_mb", 0.0)}MB")
+        Log.i(TAG, "推理完成 ${System.currentTimeMillis() - t0}ms, ${numOr(c, "decode_tps", 0.0)} tok/s, ${numOr(c, "ram_usage_mb", 0.0)}MB")
         return resp.toString()
     }
 
@@ -312,6 +312,12 @@ class ModelBridge(private val context: Context) {
         // OpenAI 格式： [{type:"function", function:{name, description, parameters}}]
         // Cactus 文档说传 tools 定义，实测先原样传，失败再调
         return tools.toString()
+    }
+
+    /** Android 的 org.json 没有 optDouble(k, default)，自己写一个 */
+    private fun numOr(o: JSONObject, k: String, def: Double): Double {
+        if (!o.has(k) || o.isNull(k)) return def
+        return try { o.getDouble(k) } catch (t: Throwable) { def }
     }
 
     private fun esc(s: String?): String = (s ?: "")
