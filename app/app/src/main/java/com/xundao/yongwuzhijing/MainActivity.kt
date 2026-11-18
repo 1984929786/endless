@@ -10,19 +10,15 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
-import com.cactus.CactusEngine
 import org.json.JSONArray
 import org.json.JSONObject
 
-/**
- * 首版验证界面：加载模型 + 起本地服务 + 直接对话。
- * 目的只有一个 —— 在真机上确认 Cactus 能跑起来。
- */
 class MainActivity : AppCompatActivity() {
 
     private lateinit var bridge: ModelBridge
     private lateinit var logView: TextView
     private lateinit var replyView: TextView
+    private lateinit var status: TextView
     private val ui = Handler(Looper.getMainLooper())
     private val history = JSONArray()
 
@@ -33,28 +29,35 @@ class MainActivity : AppCompatActivity() {
 
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(24, 48, 24, 24)
+            setPadding(30, 60, 30, 30)
         }
 
         root.addView(TextView(this).apply {
-            text = "永无止境 · 本地引擎验证"
-            textSize = 20f
+            text = "永无止境"
+            textSize = 26f
             gravity = Gravity.CENTER
         })
 
+        root.addView(TextView(this).apply {
+            text = "本地引擎验证"
+            textSize = 13f
+            gravity = Gravity.CENTER
+            setPadding(0, 6, 0, 24)
+        })
+
         val btnLoad = Button(this).apply { text = "① 加载模型" }
-        val btnServer = Button(this).apply { text = "② 起服务 (127.0.0.1:${ModelBridge.port})" }
+        val btnServer = Button(this).apply { text = "② 起服务 127.0.0.1:${ModelBridge.port}" }
         val btnChat = Button(this).apply { text = "③ 说句你好" }
 
-        val status = TextView(this).apply {
+        status = TextView(this).apply {
             text = "未加载"
             textSize = 13f
-            setPadding(0, 16, 0, 16)
+            setPadding(0, 18, 0, 18)
         }
 
         replyView = TextView(this).apply {
-            textSize = 15f
-            setPadding(0, 16, 0, 16)
+            textSize = 16f
+            setPadding(0, 12, 0, 18)
         }
 
         logView = TextView(this).apply {
@@ -72,10 +75,12 @@ class MainActivity : AppCompatActivity() {
         setContentView(root)
 
         btnLoad.setOnClickListener {
-            status.text = "加载中…（首次可能要 1~3 分钟，内存紧张时更久）"
+            status.text = "加载中…"
             btnLoad.isEnabled = false
-            log("开始加载模型")
-            bridge.loadModelAsync(onProgress = { m -> ui.post { status.text = m; log(m) } }) { ok, msg ->
+            log("开始加载")
+            bridge.loadModelAsync(
+                onProgress = { m -> ui.post { status.text = m; log(m) } }
+            ) { ok, msg ->
                 ui.post {
                     btnLoad.isEnabled = true
                     status.text = if (ok) "✓ $msg" else "✗ $msg"
@@ -102,26 +107,26 @@ class MainActivity : AppCompatActivity() {
                 history.put(JSONObject().put("role", "user").put("content", "你好，请用一句话介绍你自己。"))
                 val opts = JSONObject().put("max_tokens", 256).put("temperature", 0.7)
                     .put("auto_handoff", false)
-                val raw = CactusEngine.complete(bridge.handle, history.toString(), opts.toString(), null)
+                val raw = CactusEngineHolder.complete(history.toString(), opts.toString())
                 val cost = System.currentTimeMillis() - t0
                 ui.post {
                     btnChat.isEnabled = true
                     if (raw == null) {
-                        replyView.text = "✗ 推理失败: ${CactusEngine.lastError()}"
+                        replyView.text = "✗ 推理失败: ${CactusEngineHolder.lastError()}"
                     } else {
                         val text = try {
                             val o = JSONObject(raw)
                             o.optString("response", raw)
                         } catch (t: Throwable) { raw }
                         replyView.text = text
-                        log("${cost}ms | 原始返回前 300 字:\n${raw.take(300)}")
+                        log("${cost}ms | 返回前 300 字:\n${raw.take(300)}")
                         history.put(JSONObject().put("role", "assistant").put("content", text))
                     }
                 }
             }.start()
         }
 
-        log("App 启动，模型目录候选见日志")
+        log("App 启动")
     }
 
     private fun log(s: String) {
@@ -134,4 +139,14 @@ class MainActivity : AppCompatActivity() {
         bridge.destroyModel()
         super.onDestroy()
     }
+}
+
+/** 让 MainActivity 不用直接摸句柄 */
+object CactusEngineHolder {
+    fun complete(messagesJson: String, optionsJson: String?): String? =
+        com.cactus.CactusEngine.complete(currentHandle, messagesJson, optionsJson, null)
+
+    fun lastError(): String = com.cactus.CactusEngine.lastError()
+
+    @Volatile var currentHandle: Long = 0L
 }
