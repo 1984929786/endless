@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.YWZJ" parent="Theme.AppCompat.NoActionBar">
+        <item name="android:windowBackground">#FF0F1115</item>
+        <item name="colorPrimary">#FFC6A15B</item>
+        <item name="colorAccent">#FFC6A15B</item>
+        <item name="android:textColor">#FFF5F5F2</item>
+    </style>
+</resources>
