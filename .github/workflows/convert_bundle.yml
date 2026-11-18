@@ -48,11 +48,11 @@ jobs:
         run: |
           cat > /tmp/cv.py <<'PYEOF'
           import sys
-          sys.argv = ['cactus', 'convert', 'Qwen/Qwen3.5-2B', '--bits', '4', '--trust-remote-code']
+          sys.argv = ['cactus', 'convert', 'Qwen/Qwen3.5-2B', '--bits', '4', '--reconvert']
           from cactus.cli import main
           main()
           PYEOF
-          python /tmp/cv.py 2>&1 | tail -80 || true
+          python /tmp/cv.py 2>&1 | tail -100 || true
           echo "=== weights ==="
           ls -la weights/ 2>/dev/null || echo none
 
