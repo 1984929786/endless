@@ -33,13 +33,18 @@ jobs:
           python -c "import sys; sys.path.insert(0,'engine/python'); import cactus; print('cactus ok', cactus.__file__)" 2>&1 | tail -5
 
       - name: Download bundle
-        working-directory: engine/python
+        working-directory: engine
         run: |
           set +e
-          python -m cactus.cli download Cactus-Compute/Qwen3.5-2B --bits 4 2>&1 | tail -40
+          python -c "
+import sys
+sys.argv = ['cactus', 'download', 'Cactus-Compute/Qwen3.5-2B', '--bits', '4']
+from cactus.cli import main
+main()
+" 2>&1 | tail -40
           echo "exit=$?"
           echo "=== 找权重 ==="
-          ls -la ../weights/ 2>/dev/null || ls -la ~/.cache/cactus/weights/ 2>/dev/null || echo "都没找到"
+          ls -la weights/ 2>/dev/null || ls -la ~/.cache/cactus/weights/ 2>/dev/null || echo "都没找到"
 
       - name: Inspect bundle
         run: |
