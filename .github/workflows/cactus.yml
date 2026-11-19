@@ -2,6 +2,9 @@ name: Build Cactus Engine
 
 on:
   workflow_dispatch:
+  push:
+    paths:
+      - trigger-cactus/**
 
 jobs:
   build-cactus:
@@ -28,11 +31,11 @@ jobs:
 
       - name: Clone Cactus engine
         run: |
-          git clone --depth 1 https://github.com/cactus-compute/engine.git cactus-src
+          git clone --depth 1 --branch v1.14 https://github.com/cactus-compute/engine.git cactus-src
           cd cactus-src
-          echo "--- 版本:"; cat CACTUS_VERSION 2>/dev/null || echo "无"
+          echo "--- 版本:"; git log -1 --oneline
           echo "--- 大小:"; du -sh .
-          echo "--- submodules:"; cat .gitmodules 2>/dev/null || echo "无"
+          echo "--- android 目录:"; ls android
 
       - name: Inspect engine deps
         run: |
