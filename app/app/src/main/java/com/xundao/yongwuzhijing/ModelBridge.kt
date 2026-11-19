@@ -176,18 +176,24 @@ class ModelBridge(private val context: Context) {
 
     /**
      * 把 assets/models 递归复制到私有目录。
-     * 先写到 .staging 再原子改名，避免中途被杀留下半截目录。
+     * 直接写入目标目录并写完成标记，避免 .staging + rename 拷两份（354MB 的副本会拖死低内存设备）。
      */
     private fun copyModelFromAssets(target: File, progress: (String) -> Unit) {
-        val staging = File(context.filesDir, "models/.staging")
-        if (staging.exists()) staging.deleteRecursively()
-        staging.mkdirs()
+        val doneFlag = File(context.filesDir, "models/.complete")
+
+        // 上次没拷完：清掉重来（半截目录不可用）
+        if (target.exists() && !doneFlag.isFile) {
+            progress("清理上次未完成的释放…")
+            target.deleteRecursively()
+        }
+        try { doneFlag.delete() } catch (_: Throwable) {}
+        target.mkdirs()
 
         val root = assetModelRoot()
 
         var blocks = 0
         var bytes = 0L
-        val buf = ByteArray(1 shl 20)
+        val buf = ByteArray(256 * 1024)   // 256KB，小缓冲区降低内存峰值
 
         fun walk(assetPath: String, dest: File) {
             val list = context.assets.list(assetPath) ?: return
@@ -201,8 +207,12 @@ class ModelBridge(private val context: Context) {
                             out.write(buf, 0, n)
                             bytes += n
                             blocks++
-                            if (blocks % 8000 == 0) progress("释放中：${bytes / 1048576}MB")
+                            if (blocks % 4000 == 0) {
+                                progress("释放中：${bytes / 1048576}MB")
+                                CrashCatcher.stage("释放模型 ${bytes / 1048576}MB")
+                            }
                         }
+                        out.flush()
                     }
                 }
                 return
@@ -214,16 +224,17 @@ class ModelBridge(private val context: Context) {
             }
         }
 
-        walk(root, staging)
-
-        if (target.exists()) target.deleteRecursively()
-        target.parentFile?.mkdirs()
-        if (!staging.renameTo(target)) {
-            target.mkdirs()
-            staging.copyRecursively(target, overwrite = true)
-            staging.deleteRecursively()
+        try {
+            walk(root, target)
+        } catch (t: Throwable) {
+            // 拷一半失败：留着目录但没完成标记，下次会清掉重来
+            CrashCatcher.stage("释放模型失败: ${t.message}")
+            throw t
         }
+
+        try { doneFlag.writeText(bytes.toString()) } catch (_: Throwable) {}
         progress("模型就绪：${bytes / 1048576}MB")
+        CrashCatcher.stage("模型释放完成 ${bytes / 1048576}MB")
         Log.i(TAG, "模型释放完成 ${bytes / 1048576}MB -> ${target.absolutePath}")
     }
     fun loadModelAsync(onProgress: (String) -> Unit = {}, onDone: (Boolean, String) -> Unit) {
