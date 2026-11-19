@@ -33,9 +33,9 @@ jobs:
           set -e
           GZ=app/src/main/jniLibs/arm64-v8a/libcactus.so.gz
           if [ -f "$GZ" ]; then
-            gunzip -c "$GZ" > app/src/main/jniLibs/arm64-v8a/libcactus_engine.so
+            gunzip -c "$GZ" > app/src/main/jniLibs/arm64-v8a/libcactus.so
             rm -f "$GZ"
-            chmod 644 app/src/main/jniLibs/arm64-v8a/libcactus_engine.so
+            chmod 644 app/src/main/jniLibs/arm64-v8a/libcactus.so
             ls -lh app/src/main/jniLibs/arm64-v8a/
           else
             echo "警告：未找到 libcactus.so.gz"
