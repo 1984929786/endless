@@ -1,0 +1,47 @@
+name: Probe Cactus Viability
+
+on:
+  push:
+    paths:
+      - trigger-probe/**
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Setup python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Clone engine
+        run: git clone --depth 1 https://github.com/cactus-compute/engine
+
+      - name: Install deps
+        run: |
+          pip install -e ./engine/python 2>&1 | tail -3
+          pip install -e "./engine/python[convert]" 2>&1 | tail -5
+
+      - name: Probe generic path on Qwen2.5
+        working-directory: engine
+        env:
+          HF_ENDPOINT: https://hf-mirror.com
+        run: |
+          cat > /tmp/p.py <<'PYEOF'
+          import sys
+          sys.argv = ['cactus', 'convert', 'Qwen/Qwen2.5-0.5B', '--bits', '4',
+                      '--reconvert', '--modalities', 'text', '--task', 'causal-lm',
+                      '--cache-style', 'dynamic-kv']
+          from cactus.cli import main
+          main()
+          PYEOF
+          python /tmp/p.py 2>&1 | tail -60 || true
+
+      - name: Result
+        run: |
+          echo "=== manifest? ==="
+          find engine/weights -name manifest.json 2>/dev/null | head
+          echo "=== 大小 ==="
+          du -sh engine/weights/* 2>/dev/null || echo none
