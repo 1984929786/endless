@@ -43,6 +43,12 @@
   // ---------- 启动 ----------
   function boot() {
     setBoot('正在准备本地引擎…', 5);
+    // 上次启动于这一步挂了？先告知，不阻止继续
+    call('lastStage').then(function (st) {
+      if (st && String(st).indexOf('启动中') === 0) {
+        console.warn('上次启动停在: ' + st);
+      }
+    }).catch(function () {});
     call('bootstrap').then(function () {
       pollStatus(0);
     }).catch(function (e) {
@@ -389,6 +395,60 @@
         });
       }
     }));
+
+    // 崩溃诊断
+    var diag = document.createElement('div');
+    diag.className = 'card';
+    var dt = document.createElement('div');
+    dt.className = 'card-title';
+    dt.textContent = '崩溃日志';
+    diag.appendChild(dt);
+
+    var dd = document.createElement('div');
+    dd.className = 'card-desc';
+    dd.textContent = '如果应用闪退过，这里能看到原因';
+    diag.appendChild(dd);
+
+    var out = document.createElement('pre');
+    out.style.cssText = 'margin-top:10px;padding:10px;background:var(--bg);border-radius:8px;font-size:11px;line-height:1.5;max-height:240px;overflow:auto;white-space:pre-wrap;word-break:break-all;display:none;';
+    diag.appendChild(out);
+
+    var brow = document.createElement('div');
+    brow.style.cssText = 'display:flex;gap:8px;margin-top:10px;';
+
+    var bShow = document.createElement('button');
+    bShow.className = 'btn-primary';
+    bShow.style.cssText = 'padding:8px 16px;font-size:13px;';
+    bShow.textContent = '查看';
+    bShow.onclick = function () {
+      call('lastStage').then(function (st) {
+        call('crashLog').then(function (log) {
+          var txt = '最后阶段: ' + (st || '(无)') + '\n\n' + (log || '(无崩溃记录)');
+          out.textContent = txt;
+          out.style.display = '';
+        });
+      });
+    };
+
+    var bCopy = document.createElement('button');
+    bCopy.className = 'btn-primary';
+    bCopy.style.cssText = 'padding:8px 16px;font-size:13px;background:var(--bg-3);';
+    bCopy.textContent = '复制';
+    bCopy.onclick = function () {
+      if (!out.textContent) { bShow.onclick(); setTimeout(bCopy.onclick, 400); return; }
+      var ta = document.createElement('textarea');
+      ta.value = out.textContent;
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand('copy'); bCopy.textContent = '已复制'; } catch (e) {}
+      document.body.removeChild(ta);
+      setTimeout(function () { bCopy.textContent = '复制'; }, 1500);
+    };
+
+    brow.appendChild(bShow);
+    brow.appendChild(bCopy);
+    diag.appendChild(brow);
+    subContent.appendChild(diag);
   }
 
   function renderAbout() {
