@@ -51,6 +51,19 @@ class ModelBridge(private val context: Context) {
     @Volatile var lastError: String = ""
         private set
 
+    @Volatile private var loadedPath: String = ""
+
+    /** 当前已加载的模型目录 */
+    fun currentModelPath(): String = loadedPath
+
+    /** 中断当前推理 */
+    fun stopInference() {
+        val h = handle
+        if (h != 0L) {
+            try { CactusEngine.stop(h) } catch (_: Throwable) {}
+        }
+    }
+
     /**
      * 模型目录解析，三级回退：
      * 1. 私有目录 models/current 已经有 bundle -> 直接用
@@ -231,6 +244,7 @@ class ModelBridge(private val context: Context) {
                     onDone(false, lastError); return@execute
                 }
                 modelReady = true
+                loadedPath = dir.absolutePath
                 CactusEngineHolder.currentHandle = handle
                 Log.i(TAG, "模型加载成功 handle=$handle 耗时 ${cost}ms")
                 onDone(true, "加载成功，耗时 ${cost}ms")
@@ -275,6 +289,7 @@ class ModelBridge(private val context: Context) {
             try { CactusEngine.destroy(handle) } catch (_: Throwable) {}
             handle = 0L
             modelReady = false
+            loadedPath = ""
         }
     }
 
