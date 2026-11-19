@@ -47,7 +47,6 @@ class ModelBridge(private val context: Context) {
     /** 模型加载中标记（防止加载中途被 destroy） */
     @Volatile var loading: Boolean = false
         private set
-        private set
 
     @Volatile var modelReady = false
         private set
