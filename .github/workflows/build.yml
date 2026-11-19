@@ -1,0 +1,92 @@
+name: Build Endless APK
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        run: |
+          SDKMGR=$(find "$ANDROID_HOME" -name sdkmanager -type f | head -1)
+          yes | "$SDKMGR" --licenses >/dev/null 2>&1 || true
+          "$SDKMGR" "platforms;android-34" "build-tools;34.0.0" > /dev/null
+          echo "SDK 就绪"
+
+      - name: Restore native lib
+        working-directory: app
+        run: |
+          set -e
+          GZ=app/src/main/jniLibs/arm64-v8a/libcactus.so.gz
+          gunzip -c "$GZ" > app/src/main/jniLibs/arm64-v8a/libcactus.so
+          rm -f "$GZ"
+          chmod 644 app/src/main/jniLibs/arm64-v8a/libcactus.so
+          ls -lh app/src/main/jniLibs/arm64-v8a/
+
+      - name: Download model bundle
+        run: |
+          set -e
+          mkdir -p /tmp/mdl
+          curl -fL --retry 3 -o /tmp/mdl/model.zip \
+            https://github.com/1984929786/endless/releases/download/models-v1/model-qwen3-06b.zip
+          ls -lh /tmp/mdl/model.zip
+          echo "校验大小:"
+          test $(stat -c%s /tmp/mdl/model.zip) -gt 300000000 || { echo "模型文件太小，下载失败"; exit 1; }
+
+      - name: Unpack model into assets
+        run: |
+          set -e
+          DEST=app/app/src/main/assets/models/current
+          rm -rf "$DEST"
+          mkdir -p "$DEST"
+          unzip -q /tmp/mdl/model.zip -d /tmp/mdl/x
+          # 模型 zip 可能自带一层目录，找到含 config.txt 的那层
+          SRC=$(dirname $(find /tmp/mdl/x -name config.txt | head -1))
+          echo "源目录: $SRC"
+          cp -r "$SRC"/. "$DEST"/
+          echo "=== assets 内文件数:"
+          ls "$DEST" | wc -l
+          ls "$DEST" | head -5
+          echo "=== 必需文件检查:"
+          test -f "$DEST/config.txt" || { echo "缺 config.txt"; exit 1; }
+          test -f "$DEST/tokenizer_config.txt" || echo "警告: 缺 tokenizer_config.txt"
+          W=$(ls "$DEST" | grep -c '\.weights$' || true)
+          echo ".weights 数量: $W"
+          test "$W" -gt 100 || { echo ".weights 数量异常"; exit 1; }
+          du -sh "$DEST"
+
+      - name: Build debug APK
+        working-directory: app
+        run: gradle assembleDebug --no-daemon --stacktrace
+
+      - name: Verify APK contents
+        working-directory: app
+        run: |
+          APK=$(find . -name "*.apk" | head -1)
+          echo "APK: $APK"
+          ls -lh "$APK"
+          echo "=== APK 内 assets/models 条目数:"
+          unzip -l "$APK" | grep -c "assets/models/current/" || echo 0
+          echo "=== APK 内 so:"
+          unzip -l "$APK" | grep "\.so" || echo "无 so"
+
+      - name: Upload APK
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: endless-debug-apk
+          path: app/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: warn

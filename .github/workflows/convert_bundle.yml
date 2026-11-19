@@ -1,0 +1,81 @@
+name: Convert Cactus Bundle
+
+on:
+  push:
+    paths:
+      - trigger-convert/**
+  workflow_dispatch:
+
+jobs:
+  convert:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android/sdk/ndk 2>/dev/null || true
+          df -h /
+
+      - name: Setup python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Clone engine
+        run: git clone --depth 1 https://github.com/cactus-compute/engine
+
+      - name: Install deps
+        run: |
+          pip install -e ./engine/python 2>&1 | tail -5
+          pip install -e "./engine/python[convert]" 2>&1 | tail -10
+          pip install huggingface_hub requests 2>&1 | tail -3
+          python -c "import transformers,sys; print('transformers', transformers.__version__)"
+
+      - name: Check model size on hub
+        run: |
+          python - <<'PYEOF'
+          import json, urllib.request
+          req = urllib.request.Request('https://hf-mirror.com/api/models/Qwen/Qwen3.5-2B', headers={'User-Agent':'x'})
+          j = json.loads(urllib.request.urlopen(req, timeout=60).read())
+          for s in j.get('siblings', []):
+              print(s['rfilename'])
+          PYEOF
+
+      - name: Convert
+        working-directory: engine
+        env:
+          HF_ENDPOINT: https://hf-mirror.com
+        run: |
+          cat > /tmp/cv.py <<'PYEOF'
+          import sys
+          sys.argv = ['cactus', 'convert', 'Qwen/Qwen2.5-0.5B', '--bits', '4', '--reconvert']
+          from cactus.cli import main
+          main()
+          PYEOF
+          python /tmp/cv.py 2>&1 | tail -100 || true
+          echo "=== weights ==="
+          ls -la weights/ 2>/dev/null || echo none
+
+      - name: Inspect
+        run: |
+          du -sh engine/weights/* 2>/dev/null || echo "no weights"
+          echo "=== manifest ==="
+          find engine/weights -name manifest.json 2>/dev/null | head -3
+          find engine/weights -name manifest.json 2>/dev/null | head -1 | while read m; do
+            echo "--- $m ---"
+            head -60 "$m"
+            echo "--- 目录 ---"
+            d=$(dirname $(dirname "$m"))
+            ls -la "$d"
+            du -sh "$d"
+            ls -la "$d/components" | head -25
+          done
+
+      - name: Upload bundle
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cactus-bundle
+          path: engine/weights/
+          if-no-files-found: warn
+          retention-days: 3
