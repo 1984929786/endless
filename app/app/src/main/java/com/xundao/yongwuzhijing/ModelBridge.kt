@@ -77,7 +77,7 @@ class ModelBridge(private val context: Context) {
         val current = File(context.filesDir, "models/current")
 
         // 有完成标记 = 上次已完整释放，直接信它（别每次都全量扫 327 个文件，慢且多余）
-        if (doneFlag.isFile && File(current, "config.txt").isFile) {
+        if (File(context.filesDir, "models/.complete").isFile && File(current, "config.txt").isFile) {
             return current
         }
 
