@@ -44,6 +44,12 @@ class ModelBridge(private val context: Context) {
     /** 模型句柄，0 表示未加载 */
     @Volatile var handle: Long = 0L
 
+    /**
+     * 强引用传进 native 的模型路径字符串。
+     * native 层保留 char 指针而不拷贝，GC 回收就是野指针。
+     */
+    @Volatile private var heldModelDir: String? = null
+
     /** 模型加载中标记（防止加载中途被 destroy） */
     @Volatile var loading: Boolean = false
         private set
@@ -184,29 +190,33 @@ class ModelBridge(private val context: Context) {
 
     /**
      * 把 assets/models 递归复制到私有目录。
-     * 直接写入目标目录并写完成标记，避免 .staging + rename 拷两份（354MB 的副本会拖死低内存设备）。
+     *
+     * 关键改变（2026-11-20，道友反馈每次打开都重新释放）：
+     * 不再「全有或全无」。逐文件比对大小，已经完整的直接跳过，只有缺失或是短文件才重写。
+     * 这样即使上次拷到第 200 个文件崩了，下次只补剩下的 127 个，不会从头重来。
      */
     private fun copyModelFromAssets(target: File, progress: (String) -> Unit) {
         val doneFlag = File(context.filesDir, "models/.complete")
-
-        // 上次没拷完：清掉重来（半截目录不可用）
-        if (target.exists() && !doneFlag.isFile) {
-            progress("清理上次未完成的释放…")
-            target.deleteRecursively()
-        }
-        try { doneFlag.delete() } catch (_: Throwable) {}
         target.mkdirs()
 
         val root = assetModelRoot()
 
+        var bytes = 0L          // 本轮实际写入字节
+        var copied = 0           // 本轮实际写入文件数
+        var skipped = 0          // 已存在且大小一致而跳过的文件数
         var blocks = 0
-        var bytes = 0L
         val buf = ByteArray(256 * 1024)   // 256KB，小缓冲区降低内存峰值
 
         fun walk(assetPath: String, dest: File) {
             val list = context.assets.list(assetPath) ?: return
             if (list.isEmpty()) {
                 dest.parentFile?.mkdirs()
+                // 已存在且大小一致 → 跳过（增量补的关键）
+                val expect = assetLength(assetPath)
+                if (expect > 0 && dest.isFile && dest.length() == expect) {
+                    skipped++
+                    return
+                }
                 context.assets.open(assetPath).use { input ->
                     FileOutputStream(dest).use { out ->
                         while (true) {
@@ -215,14 +225,15 @@ class ModelBridge(private val context: Context) {
                             out.write(buf, 0, n)
                             bytes += n
                             blocks++
-                            if (blocks % 4000 == 0) {
-                                progress("释放中：${bytes / 1048576}MB")
-                                CrashCatcher.stage("释放模型 ${bytes / 1048576}MB")
+                            // 每 8MB 报一次进度，避免界面看着像卡死
+                            if (blocks % 32 == 0) {
+                                progress("释放中：${bytes / 1048576}MB（已补齐 ${copied + 1} 个文件）")
                             }
                         }
                         out.flush()
                     }
                 }
+                copied++
                 return
             }
             dest.mkdirs()
@@ -235,16 +246,25 @@ class ModelBridge(private val context: Context) {
         try {
             walk(root, target)
         } catch (t: Throwable) {
-            // 拷一半失败：留着目录但没完成标记，下次会清掉重来
-            CrashCatcher.stage("释放模型失败: ${t.message}")
+            // 拷一半失败：目录保留，已写好的文件下次会被跳过，不会再从头来
+            Boot.trace(context, "释放模型失败: ${t.message}")
             throw t
         }
 
-        try { doneFlag.writeText(bytes.toString()) } catch (_: Throwable) {}
-        progress("模型就绪：${bytes / 1048576}MB")
-        CrashCatcher.stage("模型释放完成 ${bytes / 1048576}MB")
-        Log.i(TAG, "模型释放完成 ${bytes / 1048576}MB -> ${target.absolutePath}")
+        try { doneFlag.writeText("copied=$copied skipped=$skipped bytes=$bytes") } catch (_: Throwable) {}
+        progress("模型就绪：新写入 ${bytes / 1048576}MB，已有文件跳过 $skipped 个")
+        Boot.trace(context, "模型释放完成 bytes=$bytes copied=$copied skipped=$skipped")
     }
+
+    /** 取 asset 压缩前长度，失败返回 -1 */
+    private fun assetLength(path: String): Long {
+        return try {
+            context.assets.openFd(path).use { it.length }
+        } catch (_: Throwable) {
+            -1L   // 压缩过的 asset 拿不到 fd，退化成每次覆盖（不会出错，只是慢一点）
+        }
+    }
+
     fun loadModelAsync(onProgress: (String) -> Unit = {}, onDone: (Boolean, String) -> Unit) {
         loading = true
         destroying = false   // 新的加载周期，清掉上一轮的销毁意愿
@@ -259,8 +279,12 @@ class ModelBridge(private val context: Context) {
                 }
                 modelReady = false
                 val t0 = System.currentTimeMillis()
-                Boot.trace(context, "nativeInit 开始: ${dir.absolutePath}")
-                val h = CactusEngine.init(dir.absolutePath)
+                // 关键：native 层保留 char 指针不拷贝（官方 issue #66/#130），
+                // 传进去的 String 必须在整个推理期强引用住，否则 GC 回收 = 野指针 = 无堆栈 SIGSEGV。
+                // 用字段持有，不用局部变量。
+                heldModelDir = dir.absolutePath
+                Boot.trace(context, "nativeInit 开始: $heldModelDir")
+                val h = CactusEngine.init(heldModelDir)
                 val cost = System.currentTimeMillis() - t0
                 Boot.trace(context, "nativeInit 返回 handle=$h 耗时${cost}ms")
 
@@ -470,14 +494,15 @@ class ModelBridge(private val context: Context) {
         opts.put("enable_thinking_if_supported", false)
 
         val tools = req.optJSONArray("tools")
-        val toolsJson = if (tools != null && tools.length() > 0) {
-            // Cactus 要的是 OpenAI tools 数组本身
-            normalizeTools(tools)
-        } else null
+        // 实测：v4 引擎的 nativeComplete 把 tools 当作第一个可空参数之后的位置，
+        // 我们当前封装只透传 options；tools 暂时接在 options 里带过去（引擎认 options.tools 也认独立参数）。
+        if (tools != null && tools.length() > 0) {
+            opts.put("tools", normalizeTools(tools))
+        }
 
         val t0 = System.currentTimeMillis()
         val raw = try {
-            CactusEngine.complete(handle, clean.toString(), opts.toString(), toolsJson)
+            CactusEngine.complete(handle, clean.toString(), opts.toString())
         } catch (t: Throwable) {
             return """{"error":{"message":"推理失败: ${esc(t.message)}","type":"inference_error"}}"""
         }
@@ -541,10 +566,10 @@ class ModelBridge(private val context: Context) {
         return resp.toString()
     }
 
-    private fun normalizeTools(tools: JSONArray): String {
+    private fun normalizeTools(tools: JSONArray): JSONArray {
         // OpenAI 格式： [{type:"function", function:{name, description, parameters}}]
-        // Cactus 文档说传 tools 定义，实测先原样传，失败再调
-        return tools.toString()
+        // 实测引擎接受 OpenAI 原格式，直接返回数组（不能当字符串塞进 options，会被转义）
+        return tools
     }
 
     /** Android 的 org.json 没有 optDouble(k, default)，自己写一个 */

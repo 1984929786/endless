@@ -24,7 +24,7 @@
   // ---------- DOM ----------
   var $ = function (id) { return document.getElementById(id); };
   var bootPage = $('boot'), mainPage = $('main');
-  var bootStatus = $('bootStatus'), bootBar = $('bootBar'), bootRetry = $('bootRetry');
+  var bootStatus = $('bootStatus'), bootBar = $('bootBar'), bootRetry = $('bootRetry'), bootSkip = $('bootSkip');
   var chatEl = $('chat'), messagesEl = $('messages'), welcomeEl = $('welcome');
   var inputEl = $('input'), sendBtn = $('btnSend'), topTitle = $('topTitle');
   var drawer = $('drawer'), drawerMask = $('drawerMask');
@@ -41,17 +41,29 @@
   };
 
   // ---------- 启动 ----------
+  // 关键：进界面不等模型。模型加载放主界面按钮触发，
+  // 这样即使 nativeInit 崩溃，界面也已经能操作（道友 2026-11-20 要求）。
   function boot() {
-    setBoot('正在准备本地引擎…', 5);
-    // 上次启动于这一步挂了？先告知，不阻止继续
-    call('lastStage').then(function (st) {
-      if (st && String(st).indexOf('启动中') === 0) {
-        console.warn('上次启动停在: ' + st);
+    setBoot('正在准备界面…', 20);
+    var st = '';
+    call('lastStage').then(function (s) { st = String(s || ''); }).catch(function () {});
+    // 只查状态，不触发加载
+    call('status').then(function (s) {
+      s = String(s || '');
+      if (s === 'ready') {
+        // 上次已经加载好（进程还活着），直接进
+        setBoot('就绪', 100);
+        setTimeout(function () { enterMain(true); }, 250);
+        return;
       }
-    }).catch(function () {});
-    call('bootstrap').then(function () {
-      pollStatus(0);
+      // 其它情况一律进主界面，模型状态由用户手动触发
+      setBoot('界面就绪', 100);
+      setTimeout(function () {
+        enterMain(false);
+        if (st) setReleaseHint('上次启动停在：' + st);
+      }, 250);
     }).catch(function (e) {
+      // 桥接都不可用也别卡启动页
       bootFail(e && e.message ? e.message : String(e));
     });
   }
@@ -59,45 +71,45 @@
   var pollTimer = null;
   var pollStart = 0;
 
+  /** 在主界面轮询模型状态（不再占用启动页） */
   function pollStatus(n) {
     if (!pollStart) pollStart = Date.now();
-    if (Date.now() - pollStart > 300000) {
-      bootFail('加载超时（5 分钟）');
+    if (Date.now() - pollStart > 600000) {
+      releaseDone(false, '加载超时（10 分钟）');
       return;
     }
 
     call('status').then(function (s) {
       s = String(s || '');
       if (s === 'ready') {
-        setBoot('就绪', 100);
-        setTimeout(enterMain, 300);
+        releaseDone(true, '模型已就绪');
         return;
       }
       if (s.indexOf('fail:') === 0) {
-        bootFail(s.slice(5));
+        releaseDone(false, s.slice(5));
         return;
       }
       if (s.indexOf('loading:') === 0) {
         var msg = s.slice(8);
-        var pct = 10 + Math.min(80, n * 2);
-        setBoot(msg || '正在加载…', pct);
+        setReleaseHint('释放/加载中：' + (msg || '…'));
+        setBoot(msg || '正在加载…', 10 + Math.min(85, n));
         pollTimer = setTimeout(function () { pollStatus(n + 1); }, 500);
         return;
       }
-      // idle：重新触发
+      // idle：说明还没开始，触发一次
       call('loadModel').catch(function () {});
       pollTimer = setTimeout(function () { pollStatus(n + 1); }, 700);
     }).catch(function (e) {
-      bootFail(e && e.message ? e.message : String(e));
+      releaseDone(false, e && e.message ? e.message : String(e));
     });
   }
 
   function bootFail(msg) {
     if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
     pollStart = 0;
-    setBoot('启动失败：' + msg, 0);
+    setBoot('界面异常：' + msg, 0);
     bootBar.classList.remove('indeterminate');
-    bootRetry.classList.remove('hidden');
+    bootSkip.classList.remove('hidden');
   }
 
   function setBoot(text, pct) {
@@ -111,30 +123,75 @@
     }
   }
 
+  // 启动页：跳过（无条件进主界面）
+  bootSkip.onclick = function () {
+    setBoot('已跳过', 100);
+    enterMain(false);
+  };
+
+  // 启动页：重试
   bootRetry.onclick = function () {
     bootRetry.classList.add('hidden');
     setBoot('正在重试…', 5);
     pollStart = 0;
     if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
     call('loadModel').then(function () {
+      enterMain(false);
       pollStatus(0);
     }).catch(function (e) {
       bootFail(e && e.message ? e.message : String(e));
     });
   };
 
-  function enterMain() {
+  /** ready 参数决定徽标，不再无条件当成就绪 */
+  function enterMain(ready) {
     bootPage.classList.remove('active');
     mainPage.classList.add('active');
-    state.modelReady = true;
-    setBadge('本地模型已就绪', true);
+    state.modelReady = !!ready;
+    if (ready) {
+      setBadge('本地模型就绪', true);
+      setReleaseHint('');
+      var b = $('btnRelease'); if (b) b.classList.add('hidden');
+    } else {
+      setBadge('模型未就绪', false);
+    }
   }
 
   // ---------- 模型 ----------
+  function setReleaseHint(t) {
+    var e = $('releaseHint');
+    if (e) e.textContent = t || '';
+  }
+
+  /** 用户点「释放内置模型」/ 重试时调用 */
   function loadModel() {
     if (state.modelReady) return;
     setBadge('模型加载中…', false);
-    call('loadModel').catch(function () {});
+    setReleaseHint('正在释放内置模型（约 400MB，首次较慢）…');
+    pollStart = 0;
+    if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
+    call('loadModel').then(function () {
+      pollStatus(0);
+    }).catch(function (e) {
+      releaseDone(false, e && e.message ? e.message : String(e));
+    });
+  }
+
+  /** 统一收尾 */
+  function releaseDone(ok, msg) {
+    if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
+    pollStart = 0;
+    if (ok) {
+      state.modelReady = true;
+      setBadge('本地模型就绪', true);
+      setReleaseHint('');
+      var b = $('btnRelease'); if (b) b.classList.add('hidden');
+    } else {
+      state.modelReady = false;
+      setBadge('模型未就绪', false);
+      setReleaseHint('加载失败：' + msg + '（可直接重试，无需重装）');
+      var r = $('btnRelease'); if (r) { r.classList.remove('hidden'); r.textContent = '重试'; }
+    }
   }
 
   function setBadge(text, ready) {
@@ -525,6 +582,10 @@
     if (subpage.classList.contains('show')) { subpage.classList.remove('show'); return true; }
     return false;
   };
+
+  // 主界面的「释放内置模型」按钮
+  var releaseBtn = $('btnRelease');
+  if (releaseBtn) releaseBtn.onclick = function () { loadModel(); };
 
   // ---------- 启动 ----------
   if (document.readyState === 'loading') {

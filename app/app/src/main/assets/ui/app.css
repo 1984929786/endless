@@ -69,6 +69,18 @@ body { display: flex; flex-direction: column; }
 .btn-primary:active { opacity: .75; }
 .btn-danger { background: var(--danger); }
 
+/* 次级按钮：跳过 / 重试 这类不抢视线的操作 */
+.btn-ghost {
+  background: none; border: 1px solid var(--line, #d8d8d8); color: var(--fg);
+  padding: 10px 26px; border-radius: 24px; font-size: 14px;
+  cursor: pointer; transition: opacity .2s; margin-top: 14px;
+}
+.btn-ghost:active { opacity: .6; }
+
+/* 主界面欢迎区的释放按钮 */
+.welcome .btn-primary { margin-top: 18px; }
+.welcome .hint { margin-top: 10px; }
+
 .icon-btn {
   background: none; border: none; color: var(--fg); padding: 8px;
   display: flex; align-items: center; justify-content: center;

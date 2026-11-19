@@ -24,6 +24,7 @@
     <div id="bootStatus" class="boot-status">正在准备…</div>
     <div class="progress"><div id="bootBar" class="progress-bar"></div></div>
     <button id="bootRetry" class="btn-primary hidden">重试</button>
+    <button id="bootSkip" class="btn-ghost">跳过，直接进入</button>
   </div>
 </div>
 
@@ -58,6 +59,8 @@
       </div>
       <h2>有什么可以帮你？</h2>
       <p class="hint">模型运行在本机，对话不会离开这台设备</p>
+      <button id="btnRelease" class="btn-primary">释放内置模型</button>
+      <p class="hint" id="releaseHint"></p>
     </div>
     <div id="messages" class="messages"></div>
   </main>

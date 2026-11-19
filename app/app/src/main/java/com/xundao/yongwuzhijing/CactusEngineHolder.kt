@@ -20,14 +20,16 @@ object CactusEngineHolder {
     @Volatile private var holdMessages: String? = null
     @Volatile private var holdOptions: String? = null
 
-    fun complete(messagesJson: String, optionsJson: String?): String? {
+    fun complete(messagesJson: String, optionsJson: String?, toolsJson: String? = null): String? {
         val h = currentHandle
         if (h == 0L) return null
 
         holdMessages = messagesJson
         holdOptions = optionsJson
         try {
-            return CactusEngine.complete(h, messagesJson, optionsJson, null)
+            // v4 引擎的 tools 参数在 nativeComplete 里，但 CactusEngine.complete
+            // 当前的封装只暴露到 options 层；toolsJson 留给后续需要时再扩。
+            return CactusEngine.complete(h, messagesJson, optionsJson)
         } finally {
             holdMessages = null
             holdOptions = null
