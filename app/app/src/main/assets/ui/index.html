@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<title>永无止境</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+
+<!-- ========== 启动/加载页 ========== -->
+<div id="boot" class="page active">
+  <div class="boot-inner">
+    <div class="logo">
+      <svg viewBox="0 0 100 100" width="96" height="96">
+        <circle cx="50" cy="50" r="46" fill="none" stroke="currentColor" stroke-width="3"/>
+        <path d="M50 4 a46 46 0 0 1 0 92 a23 23 0 0 1 0-46 a23 23 0 0 0 0-46" fill="currentColor"/>
+        <circle cx="50" cy="27" r="6" fill="var(--bg)"/>
+        <circle cx="50" cy="73" r="6" fill="currentColor"/>
+      </svg>
+    </div>
+    <h1>永无止境</h1>
+    <p class="sub">本地智能 · 无需联网</p>
+    <div id="bootStatus" class="boot-status">正在准备…</div>
+    <div class="progress"><div id="bootBar" class="progress-bar"></div></div>
+    <button id="bootRetry" class="btn-primary hidden">重试</button>
+  </div>
+</div>
+
+<!-- ========== 主界面 ========== -->
+<div id="main" class="page">
+
+  <!-- 顶栏 -->
+  <header class="topbar">
+    <button id="btnMenu" class="icon-btn" aria-label="菜单">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/>
+      </svg>
+    </button>
+    <div class="topbar-title" id="topTitle">新对话</div>
+    <button id="btnNew" class="icon-btn" aria-label="新对话">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+      </svg>
+    </button>
+  </header>
+
+  <!-- 聊天区 -->
+  <main id="chat" class="chat">
+    <div id="welcome" class="welcome">
+      <div class="logo small">
+        <svg viewBox="0 0 100 100" width="56" height="56">
+          <circle cx="50" cy="50" r="46" fill="none" stroke="currentColor" stroke-width="3"/>
+          <path d="M50 4 a46 46 0 0 1 0 92 a23 23 0 0 1 0-46 a23 23 0 0 0 0-46" fill="currentColor"/>
+          <circle cx="50" cy="27" r="6" fill="var(--bg)"/>
+          <circle cx="50" cy="73" r="6" fill="currentColor"/>
+        </svg>
+      </div>
+      <h2>有什么可以帮你？</h2>
+      <p class="hint">模型运行在本机，对话不会离开这台设备</p>
+    </div>
+    <div id="messages" class="messages"></div>
+  </main>
+
+  <!-- 输入区 -->
+  <footer class="composer">
+    <div class="composer-inner">
+      <textarea id="input" rows="1" placeholder="发消息…" enterkeyhint="send"></textarea>
+      <button id="btnSend" class="send-btn" disabled aria-label="发送">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/>
+        </svg>
+      </button>
+    </div>
+  </footer>
+
+  <!-- 抽屉 -->
+  <div id="drawerMask" class="drawer-mask"></div>
+  <aside id="drawer" class="drawer">
+    <div class="drawer-head">
+      <div class="logo tiny">
+        <svg viewBox="0 0 100 100" width="34" height="34">
+          <circle cx="50" cy="50" r="46" fill="none" stroke="currentColor" stroke-width="4"/>
+          <path d="M50 4 a46 46 0 0 1 0 92 a23 23 0 0 1 0-46 a23 23 0 0 0 0-46" fill="currentColor"/>
+          <circle cx="50" cy="27" r="6" fill="var(--bg)"/>
+          <circle cx="50" cy="73" r="6" fill="currentColor"/>
+        </svg>
+      </div>
+      <div>
+        <div class="drawer-title">永无止境</div>
+        <div class="drawer-sub">本地智能</div>
+      </div>
+    </div>
+    <nav class="drawer-nav">
+      <button class="nav-item" data-page="chat">
+        <span class="nav-icon">💬</span><span>对话</span>
+      </button>
+      <button class="nav-item" data-page="history">
+        <span class="nav-icon">🗂</span><span>历史会话</span>
+      </button>
+      <button class="nav-item" data-page="models">
+        <span class="nav-icon">📦</span><span>模型管理</span>
+      </button>
+      <button class="nav-item" data-page="settings">
+        <span class="nav-icon">⚙️</span><span>设置</span>
+      </button>
+      <button class="nav-item" data-page="about">
+        <span class="nav-icon">ℹ️</span><span>关于</span>
+      </button>
+    </nav>
+    <div class="drawer-foot">
+      <div id="modelBadge" class="model-badge">模型未加载</div>
+    </div>
+  </aside>
+
+  <!-- 子页面容器 -->
+  <div id="subpage" class="subpage">
+    <header class="topbar">
+      <button id="btnBack" class="icon-btn" aria-label="返回">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <polyline points="15 18 9 12 15 6"/>
+        </svg>
+      </button>
+      <div class="topbar-title" id="subTitle">历史会话</div>
+      <div style="width:38px"></div>
+    </header>
+    <div id="subContent" class="sub-content"></div>
+  </div>
+
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
