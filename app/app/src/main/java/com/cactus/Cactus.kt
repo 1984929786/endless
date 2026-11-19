@@ -77,10 +77,20 @@ object CactusEngine {
         optionsJson: String?,
         toolsJson: String?,
         onToken: (String, Int) -> Unit
-    ): String? = CactusJNI.nativeComplete(
-        handle, messagesJson, optionsJson, toolsJson,
-        CactusTokenCallback { tok, id -> onToken(tok, id) }, null
-    )
+    ): String? {
+        // 回调对象必须强引用住：C++ 侧保存了它的全局引用，
+        // Java 侧一旦被 GC 就是 use-after-free → SIGSEGV（无 Java 堆栈的闪退）
+        val cb = CactusTokenCallback { tok, id -> onToken(tok, id) }
+        heldCallback = cb
+        try {
+            return CactusJNI.nativeComplete(handle, messagesJson, optionsJson, toolsJson, cb, null)
+        } finally {
+            heldCallback = null
+        }
+    }
+
+    /** 持有正在使用的回调，防止 native 侧持有裸指针时被 GC */
+    @Volatile private var heldCallback: CactusTokenCallback? = null
 
     fun lastError(): String = try { CactusJNI.nativeGetLastError() } catch (t: Throwable) { "" }
 }
