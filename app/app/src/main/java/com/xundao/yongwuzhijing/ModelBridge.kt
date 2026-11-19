@@ -25,6 +25,16 @@ class ModelBridge(private val context: Context) {
         private const val TAG = "ModelBridge"
         var port: Int = 18790
             private set
+
+        /** 外部模型候选目录，按优先级排 */
+        private val CANDIDATE_DIRS = listOf(
+            "/storage/emulated/0/Download/qwen35-2b-int4",
+            "/sdcard/Download/qwen35-2b-int4",
+            "/storage/emulated/0/Download/qwen3-06b-cq4",
+            "/sdcard/Download/qwen3-06b-cq4",
+            "/storage/emulated/0/Download/Models/qwen35-2b-int4",
+            "/storage/emulated/0/qwen35-2b-int4"
+        )
     }
 
     @Volatile private var running = false
@@ -61,18 +71,71 @@ class ModelBridge(private val context: Context) {
             progress("内置模型释放后仍不可用，尝试外部目录")
         }
 
-        val ext = File("/storage/emulated/0/Download/qwen35-2b-int4")
-        if (isUsableModelDir(ext)) return ext
+        // 外部目录：多候选 + 逐条报告
+        var found: File? = null
+        for (p in CANDIDATE_DIRS) {
+            val d = File(p)
+            val ok = isUsableModelDir(d)
+            val why = probeDir(d)
+            progress("候选 $p -> " + (if (ok) "✓ 可用" else "✗ " + why))
+            if (ok && found == null) found = d
+        }
+        if (found != null) return found
 
+        progress("所有候选目录都不可用，回退到私有目录")
         return current
+    }
+
+    /** 扫描结果的详细原因，用于定位问题 */
+    private fun probeDir(dir: File): String {
+        if (!dir.exists()) return "不存在"
+        if (!dir.isDirectory) return "不是目录"
+        if (!dir.canRead()) return "无读权限"
+        val files = dir.listFiles()
+            ?: return "listFiles 返回 null（权限或分区存储限制）"
+        val weights = files.count { it.name.endsWith(".weights") }
+        val hasCfg = File(dir, "config.txt").isFile
+        val hasTok = File(dir, "tokenizer_config.txt").isFile
+        return "可读，文件 ${files.size} 个，.weights ${weights} 个，config.txt=${hasCfg}，tokenizer=${hasTok}"
+    }
+
+    /** 递归搜索 Download 下所有含 .weights 的目录，用于诊断 */
+    fun scanDownloadDirs(onLine: (String) -> Unit) {
+        val roots = listOf(
+            "/storage/emulated/0/Download",
+            "/sdcard/Download",
+            "/storage/emulated/0"
+        )
+        for (r in roots) {
+            val root = File(r)
+            onLine("扫描 $r -> " + if (!root.exists()) "不存在"
+                else if (!root.canRead()) "无权限"
+                else "可读")
+            if (!root.canRead()) continue
+            walk(root, 0, onLine)
+        }
+    }
+
+    private fun walk(dir: File, depth: Int, onLine: (String) -> Unit) {
+        if (depth > 3) return
+        val files = dir.listFiles() ?: return
+        val weights = files.count { it.name.endsWith(".weights") }
+        if (weights > 0) {
+            onLine("✓ 找到模型: ${dir.absolutePath}  ($weights 个 .weights)")
+            return
+        }
+        for (f in files) {
+            if (f.isDirectory && !f.name.startsWith(".")) walk(f, depth + 1, onLine)
+        }
     }
 
     /** 判断一个目录是不是可用的模型目录 */
     private fun isUsableModelDir(dir: File): Boolean {
-        if (!dir.isDirectory) return false
+        if (!dir.isDirectory || !dir.canRead()) return false
         if (File(dir, "components/manifest.json").isFile) return true
         val files = dir.listFiles() ?: return false
-        return files.any { it.name.endsWith(".weights") }
+        // v1.14 引擎要求：config.txt + 至少一个 .weights
+        return File(dir, "config.txt").isFile && files.any { it.name.endsWith(".weights") }
     }
 
     /** APK 的 assets 里有没有内置模型 */
