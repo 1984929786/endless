@@ -53,6 +53,7 @@ class MainActivity : AppCompatActivity() {
         })
 
         val btnLoad = Button(this).apply { text = "① 加载模型" }
+        val btnScan = Button(this).apply { text = "扫 扫描下载目录" }
         val btnServer = Button(this).apply { text = "② 起服务 127.0.0.1:${ModelBridge.port}" }
         val btnChat = Button(this).apply { text = "③ 说句你好" }
 
@@ -73,6 +74,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         root.addView(btnLoad)
+        root.addView(btnScan)
         root.addView(btnServer)
         root.addView(btnChat)
         root.addView(status)
@@ -80,6 +82,14 @@ class MainActivity : AppCompatActivity() {
         root.addView(ScrollView(this).apply { addView(logView) })
 
         setContentView(root)
+
+        btnScan.setOnClickListener {
+            logView.text = ""
+            Thread {
+                bridge.scanDownloadDirs { line -> log(line) }
+                ui.post { log("扫描结束") }
+            }.start()
+        }
 
         btnLoad.setOnClickListener {
             status.text = "加载中…"
