@@ -212,32 +212,41 @@
     sendBtn.disabled = true;
 
     var bubble = renderMsg('ai', '', { typing: true });
-    state.streaming = '';
+    var t0 = Date.now();
 
-    var payload = {
-      messages: state.messages.slice(-12),
-      onToken: function (piece) {
-        state.streaming += piece;
-        bubble.textContent = state.streaming;
-        scrollBottom();
+    // 计时器：让用户看到在干活
+    var timer = setInterval(function () {
+      var s = Math.round((Date.now() - t0) / 1000);
+      bubble.textContent = '思考中… ' + s + 's';
+    }, 500);
+
+    var payload = JSON.stringify({ messages: state.messages.slice(-12) });
+
+    // 延时到下一帧，先把气泡画出来再进同步推理
+    setTimeout(function () {
+      var answer = '';
+      try {
+        answer = String(call('complete', payload) || '');
+      } catch (e) {
+        answer = '';
       }
-    };
 
-    call('complete', JSON.stringify(payload)).then(function (full) {
+      clearInterval(timer);
       bubble.classList.remove('typing');
-      var answer = full || state.streaming || '';
-      bubble.textContent = answer;
-      state.messages.push({ role: 'assistant', content: answer });
-      saveSession();
-    }).catch(function (e) {
-      bubble.classList.remove('typing');
-      bubble.textContent = '出错了：' + (e && e.message ? e.message : e);
-      bubble.parentElement.classList.add('msg-error');
-    }).then(function () {
+
+      if (!answer) {
+        bubble.textContent = '没有生成内容。可能是内存不足，试着关掉其他应用重试。';
+        bubble.parentElement.classList.add('msg-error');
+      } else {
+        bubble.textContent = answer;
+        state.messages.push({ role: 'assistant', content: answer });
+        saveSession();
+      }
+
       state.busy = false;
       autoGrow();
       scrollBottom();
-    });
+    }, 60);
   }
 
   // ---------- 会话 ----------
@@ -423,9 +432,14 @@
     bShow.onclick = function () {
       call('lastStage').then(function (st) {
         call('crashLog').then(function (log) {
-          var txt = '最后阶段: ' + (st || '(无)') + '\n\n' + (log || '(无崩溃记录)');
-          out.textContent = txt;
-          out.style.display = '';
+          call('memInfo').then(function (mem) {
+            var txt = '最后阶段: ' + (st || '(无)') + '\n\n内存: ' + (mem || '?') + '\n\n' + (log || '(无崩溃记录)');
+            out.textContent = txt;
+            out.style.display = '';
+          }).catch(function () {
+            out.textContent = '最后阶段: ' + (st || '(无)') + '\n\n' + (log || '(无崩溃记录)');
+            out.style.display = '';
+          });
         });
       });
     };
