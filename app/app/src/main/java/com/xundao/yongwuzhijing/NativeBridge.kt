@@ -98,8 +98,32 @@ class NativeBridge(
     @Volatile private var lastProgress: String? = null
     @Volatile private var lastLoadError: String? = null
 
+    /**
+     * 整个进程只允许调用一次 nativeInit。
+     *
+     * 根因（官方 issue #130，维护者原话）：
+     *   "stale per-prefix engine state" —— v1.14 引擎在重复 init 时会恢复
+     *   陈旧的 KV/decode 状态，没恢复全 → SIGSEGV（无 Java 堆栈）。
+     * 修复只在 main 分支（v4.x），v1.14 没有。
+     *
+     * 所以：init 只能成功一次。失败也不再重试（重试 = 第二次 init = 必崩），
+     * 而是告诉用户重启应用。
+     */
+    @Volatile private var initAttempted = false
+
     private fun startLoadAsync() {
+        if (initAttempted) {
+            // 已经试过了。若模型已就绪就正常；否则明确告知必须重启
+            if (bridge.modelReady) {
+                lastProgress = "就绪"
+                lastLoadError = null
+            } else {
+                lastLoadError = "引擎初始化失败，请完全退出应用（从最近任务划掉）后重新打开"
+            }
+            return
+        }
         if (!loading.compareAndSet(false, true)) return
+        initAttempted = true
         lastLoadError = null
         lastProgress = "正在释放内置模型…"
         CrashCatcher.stage("开始异步加载模型")
