@@ -243,6 +243,7 @@ class ModelBridge(private val context: Context) {
     fun loadModelAsync(onProgress: (String) -> Unit = {}, onDone: (Boolean, String) -> Unit) {
         loading = true
         destroying = false   // 新的加载周期，清掉上一轮的销毁意愿
+        Boot.trace(context, "loadModelAsync 开始")
         pool.execute {
             try {
                 val dir = resolveModelDir { msg -> Log.i(TAG, msg); onProgress(msg) }
@@ -253,8 +254,10 @@ class ModelBridge(private val context: Context) {
                 }
                 modelReady = false
                 val t0 = System.currentTimeMillis()
+                Boot.trace(context, "nativeInit 开始: ${dir.absolutePath}")
                 val h = CactusEngine.init(dir.absolutePath)
                 val cost = System.currentTimeMillis() - t0
+                Boot.trace(context, "nativeInit 返回 handle=$h 耗时${cost}ms")
 
                 // init 期间被要求销毁（退出了应用）：直接收尾，不把句柄交出去
                 if (destroying) {
