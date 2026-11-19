@@ -54,6 +54,27 @@ class NativeBridge(
         return "idle"
     }
 
+    /** 读崩溃日志（给用户看 / 发给我） */
+    @JavascriptInterface
+    fun crashLog(): String = CrashCatcher.read(context)
+
+    @JavascriptInterface
+    fun lastStage(): String = CrashCatcher.lastStageText(context)
+
+    /** 把崩溃日志导出到应用外部可读的地方 */
+    @JavascriptInterface
+    fun exportCrash(): String {
+        return try {
+            val txt = "stage: " + CrashCatcher.lastStageText(context) + "\n\n" + CrashCatcher.read(context)
+            if (txt.isBlank()) return "没有崩溃记录"
+            val f = File(context.getExternalFilesDir(null), "crash-${System.currentTimeMillis()}.txt")
+            f.writeText(txt)
+            f.absolutePath
+        } catch (t: Throwable) {
+            "导出失败: ${t.message}"
+        }
+    }
+
     @Volatile private var lastProgress: String? = null
     @Volatile private var lastLoadError: String? = null
 
@@ -61,11 +82,13 @@ class NativeBridge(
         if (!loading.compareAndSet(false, true)) return
         lastLoadError = null
         lastProgress = "正在释放内置模型…"
+        CrashCatcher.stage("开始异步加载模型")
         Thread {
             try {
                 bridge.loadModelAsync(
                     onProgress = { msg ->
                         lastProgress = msg
+                        CrashCatcher.stage(msg)
                         Log.i(TAG, msg)
                     },
                     onDone = { ok, msg ->
@@ -73,8 +96,10 @@ class NativeBridge(
                         if (ok) {
                             lastProgress = "就绪"
                             lastLoadError = null
+                            CrashCatcher.stage("模型加载成功")
                         } else {
                             lastLoadError = msg
+                            CrashCatcher.stage("模型加载失败: $msg")
                         }
                     }
                 )
