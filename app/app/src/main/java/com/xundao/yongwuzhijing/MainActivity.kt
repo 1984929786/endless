@@ -1,5 +1,8 @@
 package com.xundao.yongwuzhijing
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -10,6 +13,8 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -24,6 +29,8 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        askStoragePermission()
 
         bridge = ModelBridge(applicationContext)
 
@@ -127,6 +134,23 @@ class MainActivity : AppCompatActivity() {
         }
 
         log("App 启动")
+    }
+
+    /** Android 10 读 /sdcard/Download 需要运行时权限 */
+    private fun askStoragePermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            if (Build.VERSION.SDK_INT == Build.VERSION_CODES.Q) {
+                val p = Manifest.permission.READ_EXTERNAL_STORAGE
+                if (ContextCompat.checkSelfPermission(this, p) != PackageManager.PERMISSION_GRANTED) {
+                    ActivityCompat.requestPermissions(this, arrayOf(p), 1001)
+                }
+            }
+            return
+        }
+        val p = Manifest.permission.READ_EXTERNAL_STORAGE
+        if (ContextCompat.checkSelfPermission(this, p) != PackageManager.PERMISSION_GRANTED) {
+            ActivityCompat.requestPermissions(this, arrayOf(p), 1001)
+        }
     }
 
     private fun log(s: String) {
