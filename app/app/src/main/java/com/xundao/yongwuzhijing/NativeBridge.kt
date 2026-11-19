@@ -32,60 +32,64 @@ class NativeBridge(
 
     // ---------------- 启动流程 ----------------
 
-    /**
-     * 阻塞式启动：确保模型真正就绪了 JS 才进入主界面。
-     * 最长等 180 秒（首启解压需要时间），超时就报错而不是卡死。
+  /**
+     * 启动：立即返回，后台异步加载模型。JS 轮询 status() 拿进度。
+     * 不能阻塞 JS 线程，否则界面卡死。
      */
     @JavascriptInterface
     fun bootstrap(): String {
         if (bridge.modelReady) return "ready"
+        if (loading.get()) return "loading"
+        startLoadAsync()
+        return "loading"
+    }
 
-        val done = CountDownLatch(1)
-        var result = "ok"
+    /** JS 轮询：返回 ready / loading:进度描述 / fail:原因 */
+    @JavascriptInterface
+    fun status(): String {
+        if (bridge.modelReady) return "ready"
+        val err = lastLoadError
+        if (err != null) return "fail:$err"
+        if (loading.get()) return "loading:" + (lastProgress ?: "正在加载模型…")
+        return "idle"
+    }
 
-        loadModelInternal { ok, msg ->
-            result = if (ok) "ok" else "fail:$msg"
-            done.countDown()
-        }
+    @Volatile private var lastProgress: String? = null
+    @Volatile private var lastLoadError: String? = null
 
-        val ok = done.await(180, TimeUnit.SECONDS)
-        if (!ok) return "fail:模型加载超时"
-        return result
+    private fun startLoadAsync() {
+        if (!loading.compareAndSet(false, true)) return
+        lastLoadError = null
+        lastProgress = "正在释放内置模型…"
+        Thread {
+            try {
+                bridge.loadModelAsync(
+                    onProgress = { msg ->
+                        lastProgress = msg
+                        Log.i(TAG, msg)
+                    },
+                    onDone = { ok, msg ->
+                        loading.set(false)
+                        if (ok) {
+                            lastProgress = "就绪"
+                            lastLoadError = null
+                        } else {
+                            lastLoadError = msg
+                        }
+                    }
+                )
+            } catch (t: Throwable) {
+                loading.set(false)
+                lastLoadError = t.message ?: "未知错误"
+                Log.e(TAG, "loadModel throw", t)
+            }
+        }.start()
     }
 
     @JavascriptInterface
     fun loadModel(): String {
-        val done = CountDownLatch(1)
-        var result = "ok"
-
-        loadModelInternal { ok, msg ->
-            result = if (ok) "ok" else "fail:$msg"
-            done.countDown()
-        }
-
-        if (!done.await(180, TimeUnit.SECONDS)) return "fail:模型加载超时"
-        return result
-    }
-
-    private fun loadModelInternal(cb: (Boolean, String) -> Unit) {
-        // 防重入：已经在加载就直接返回
-        if (!loading.compareAndSet(false, true)) {
-            cb(false, "正在加载中")
-            return
-        }
-        try {
-            bridge.loadModelAsync(
-                onProgress = { msg -> Log.i(TAG, msg) },
-                onDone = { ok, msg ->
-                    loading.set(false)
-                    cb(ok, msg)
-                }
-            )
-        } catch (t: Throwable) {
-            loading.set(false)
-            Log.e(TAG, "loadModel throw", t)
-            cb(false, t.message ?: "未知错误")
-        }
+        startLoadAsync()
+        return status()
     }
 
     // ---------------- 推理 ----------------
