@@ -7,14 +7,18 @@
 
   function call(fn) {
     if (!N || typeof N[fn] !== 'function') return Promise.reject(new Error('原生接口不可用: ' + fn));
-    var args = Array.prototype.slice.call(arguments, 1);
-    return new Promise(function (resolve, reject) {
-      try {
-        var r = N[fn].apply(N, args);
-        if (r && typeof r.then === 'function') r.then(resolve, reject);
-        else resolve(r);
-      } catch (e) { reject(e); }
-    });
+    try {
+      var r;
+      var n = arguments.length;
+      if (n <= 1) r = N[fn]();
+      else if (n === 2) r = N[fn](arguments[1]);
+      else if (n === 3) r = N[fn](arguments[1], arguments[2]);
+      else if (n === 4) r = N[fn](arguments[1], arguments[2], arguments[3]);
+      else r = N[fn](arguments[1], arguments[2], arguments[3], arguments[4]);
+      return Promise.resolve(r);
+    } catch (e) {
+      return Promise.reject(e);
+    }
   }
 
   // ---------- DOM ----------
@@ -39,21 +43,61 @@
   // ---------- 启动 ----------
   function boot() {
     setBoot('正在准备本地引擎…', 5);
-    call('bootstrap', function (stage, pct) {
-      setBoot(stage, pct);
-    }).then(function () {
-      setBoot('就绪', 100);
-      setTimeout(enterMain, 380);
+    call('bootstrap').then(function () {
+      pollStatus(0);
     }).catch(function (e) {
-      setBoot('启动失败：' + (e && e.message ? e.message : e), 0);
-      bootBar.classList.remove('indeterminate');
-      bootRetry.classList.remove('hidden');
+      bootFail(e && e.message ? e.message : String(e));
     });
+  }
+
+  var pollTimer = null;
+  var pollStart = 0;
+
+  function pollStatus(n) {
+    if (!pollStart) pollStart = Date.now();
+    if (Date.now() - pollStart > 300000) {
+      bootFail('加载超时（5 分钟）');
+      return;
+    }
+
+    call('status').then(function (s) {
+      s = String(s || '');
+      if (s === 'ready') {
+        setBoot('就绪', 100);
+        setTimeout(enterMain, 300);
+        return;
+      }
+      if (s.indexOf('fail:') === 0) {
+        bootFail(s.slice(5));
+        return;
+      }
+      if (s.indexOf('loading:') === 0) {
+        var msg = s.slice(8);
+        var pct = 10 + Math.min(80, n * 2);
+        setBoot(msg || '正在加载…', pct);
+        pollTimer = setTimeout(function () { pollStatus(n + 1); }, 500);
+        return;
+      }
+      // idle：重新触发
+      call('loadModel').catch(function () {});
+      pollTimer = setTimeout(function () { pollStatus(n + 1); }, 700);
+    }).catch(function (e) {
+      bootFail(e && e.message ? e.message : String(e));
+    });
+  }
+
+  function bootFail(msg) {
+    if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
+    pollStart = 0;
+    setBoot('启动失败：' + msg, 0);
+    bootBar.classList.remove('indeterminate');
+    bootRetry.classList.remove('hidden');
   }
 
   function setBoot(text, pct) {
     bootStatus.textContent = text || '';
     if (pct == null || pct <= 0) {
+      bootBar.style.width = '100%';
       bootBar.classList.add('indeterminate');
     } else {
       bootBar.classList.remove('indeterminate');
@@ -63,27 +107,28 @@
 
   bootRetry.onclick = function () {
     bootRetry.classList.add('hidden');
-    boot();
+    setBoot('正在重试…', 5);
+    pollStart = 0;
+    if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
+    call('loadModel').then(function () {
+      pollStatus(0);
+    }).catch(function (e) {
+      bootFail(e && e.message ? e.message : String(e));
+    });
   };
 
   function enterMain() {
     bootPage.classList.remove('active');
     mainPage.classList.add('active');
-    loadModel();
+    state.modelReady = true;
+    setBadge('本地模型已就绪', true);
   }
 
   // ---------- 模型 ----------
   function loadModel() {
+    if (state.modelReady) return;
     setBadge('模型加载中…', false);
-    call('loadModel').then(function (msg) {
-      state.modelReady = true;
-      setBadge('本地模型已就绪', true);
-      console.log('模型就绪:', msg);
-    }).catch(function (e) {
-      state.modelReady = false;
-      setBadge('模型加载失败', false);
-      pushError('模型加载失败：' + (e && e.message ? e.message : e));
-    });
+    call('loadModel').catch(function () {});
   }
 
   function setBadge(text, ready) {
