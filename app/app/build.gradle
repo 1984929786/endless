@@ -41,10 +41,14 @@ android {
         jniLibs {
             useLegacyPackaging = true
         }
-        resources {
-            // 模型权重不能被压缩，否则 AAPT 会改坏且解压耗时翻倍
-            noCompress 'weights', 'txt', 'json', 'jinja2'
-        }
+    }
+
+    androidResources {
+        // 模型权重不能被压缩，否则 AAPT 会改坏且解压耗时翻倍
+        noCompress 'weights'
+        noCompress 'txt'
+        noCompress 'json'
+        noCompress 'jinja2'
     }
 
     // 模型不打包进 APK（1.4GB 会撑爆安装），改用外部目录
