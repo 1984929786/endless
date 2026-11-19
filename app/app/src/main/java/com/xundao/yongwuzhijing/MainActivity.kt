@@ -19,16 +19,22 @@ class MainActivity : AppCompatActivity() {
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
+        Boot.trace(applicationContext, "MainActivity.onCreate 入口")
         // 必须在 super.onCreate 之前装，才能抓到 onCreate 里的异常
         CrashCatcher.install(applicationContext)
         CrashCatcher.stage("onCreate 开始")
 
+        Boot.trace(applicationContext, "super.onCreate 之前")
         super.onCreate(savedInstanceState)
+        Boot.trace(applicationContext, "super.onCreate 之后")
 
         try {
+            Boot.trace(applicationContext, "创建 ModelBridge")
             bridge = ModelBridge(applicationContext)
+            Boot.trace(applicationContext, "创建 NativeBridge")
             native = NativeBridge(applicationContext, bridge)
 
+            Boot.trace(applicationContext, "创建 WebView")
             web = WebView(this)
             setContentView(web)
 
@@ -64,6 +70,7 @@ class MainActivity : AppCompatActivity() {
             }
 
             web.loadUrl("file:///android_asset/ui/index.html")
+            Boot.trace(applicationContext, "已加载 HTML")
             CrashCatcher.stage("onCreate 完成")
 
         } catch (t: Throwable) {
