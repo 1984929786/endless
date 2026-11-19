@@ -140,8 +140,18 @@ class ModelBridge(private val context: Context) {
 
     /** APK 的 assets 里有没有内置模型 */
     private fun hasAssetModel(): Boolean = try {
-        context.assets.list("models")?.isNotEmpty() == true
+        val top = context.assets.list("models") ?: return false
+        if (top.isEmpty()) return false
+        // 兼容两种布局：models/current/... 或 models/...
+        val probe = if (top.contains("current")) "models/current" else "models"
+        val inside = context.assets.list(probe) ?: return false
+        inside.isNotEmpty()
     } catch (t: Throwable) { false }
+
+    private fun assetModelRoot(): String = try {
+        val top = context.assets.list("models") ?: return "models/current"
+        if (top.contains("current")) "models/current" else "models"
+    } catch (t: Throwable) { "models/current" }
 
     /**
      * 把 assets/models 递归复制到私有目录。
@@ -151,6 +161,8 @@ class ModelBridge(private val context: Context) {
         val staging = File(context.filesDir, "models/.staging")
         if (staging.exists()) staging.deleteRecursively()
         staging.mkdirs()
+
+        val root = assetModelRoot()
 
         var blocks = 0
         var bytes = 0L
@@ -181,7 +193,7 @@ class ModelBridge(private val context: Context) {
             }
         }
 
-        walk("models", staging)
+        walk(root, staging)
 
         if (target.exists()) target.deleteRecursively()
         target.parentFile?.mkdirs()
