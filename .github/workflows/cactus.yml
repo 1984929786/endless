@@ -40,12 +40,12 @@ jobs:
       - name: Inspect engine deps
         run: |
           cd cactus-src
-          echo "=== cactus-engine 目录:"
-          ls cactus-engine
-          echo "=== libs:"
-          ls cactus-engine/libs 2>/dev/null || echo "无 libs 目录"
-          echo "=== 找 curl:"
-          find . -maxdepth 4 -name "*curl*" -type d 2>/dev/null | head
+          echo "=== 根目录:"
+          ls
+          echo "=== android 目录:"
+          ls android
+          echo "=== build.sh:"
+          head -40 android/build.sh
 
       - name: Build Cactus for Android
         run: |
