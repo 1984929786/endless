@@ -15,7 +15,7 @@ class CactusJNI {
 
     companion object {
         init {
-            System.loadLibrary("cactus_engine")
+            System.loadLibrary("cactus")
         }
 
         @JvmStatic external fun nativeSetFramework()
