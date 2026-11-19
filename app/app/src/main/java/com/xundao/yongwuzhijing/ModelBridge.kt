@@ -283,8 +283,9 @@ class ModelBridge(private val context: Context) {
                 // 传进去的 String 必须在整个推理期强引用住，否则 GC 回收 = 野指针 = 无堆栈 SIGSEGV。
                 // 用字段持有，不用局部变量。
                 heldModelDir = dir.absolutePath
-                Boot.trace(context, "nativeInit 开始: $heldModelDir")
-                val h = CactusEngine.init(heldModelDir)
+                val modelDir = dir.absolutePath
+                Boot.trace(context, "nativeInit 开始: $modelDir")
+                val h = CactusEngine.init(modelDir)
                 val cost = System.currentTimeMillis() - t0
                 Boot.trace(context, "nativeInit 返回 handle=$h 耗时${cost}ms")
 

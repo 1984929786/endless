@@ -111,7 +111,7 @@ object CactusEngine {
             try { CactusJNI.nativeSetFramework() } catch (_: Throwable) {}
             frameworkSet = true
         }
-        return CactusJNI.nativeInit(heldDir!!, null, contextSize)
+        return CactusJNI.nativeInit(modelDir, null, contextSize)
     }
 
     fun destroy(handle: Long) = CactusJNI.nativeDestroy(handle)
