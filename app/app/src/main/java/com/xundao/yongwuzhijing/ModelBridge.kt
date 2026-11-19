@@ -43,6 +43,10 @@ class ModelBridge(private val context: Context) {
 
     /** 模型句柄，0 表示未加载 */
     @Volatile var handle: Long = 0L
+
+    /** 模型加载中标记（防止加载中途被 destroy） */
+    @Volatile var loading: Boolean = false
+        private set
         private set
 
     @Volatile var modelReady = false
@@ -238,6 +242,8 @@ class ModelBridge(private val context: Context) {
         Log.i(TAG, "模型释放完成 ${bytes / 1048576}MB -> ${target.absolutePath}")
     }
     fun loadModelAsync(onProgress: (String) -> Unit = {}, onDone: (Boolean, String) -> Unit) {
+        loading = true
+        destroying = false   // 新的加载周期，清掉上一轮的销毁意愿
         pool.execute {
             try {
                 val dir = resolveModelDir { msg -> Log.i(TAG, msg); onProgress(msg) }
@@ -248,21 +254,33 @@ class ModelBridge(private val context: Context) {
                 }
                 modelReady = false
                 val t0 = System.currentTimeMillis()
-                handle = CactusEngine.init(dir.absolutePath)
+                val h = CactusEngine.init(dir.absolutePath)
                 val cost = System.currentTimeMillis() - t0
-                if (handle == 0L) {
+
+                // init 期间被要求销毁（退出了应用）：直接收尾，不把句柄交出去
+                if (destroying) {
+                    if (h != 0L) { try { CactusEngine.destroy(h) } catch (_: Throwable) {} }
+                    Log.i(TAG, "init 完成时已处于销毁状态，丢弃句柄")
+                    onDone(false, "已退出")
+                    return@execute
+                }
+
+                if (h == 0L) {
                     lastError = "cactus_init 失败: ${errText()}"
                     onDone(false, lastError); return@execute
                 }
+                handle = h
                 modelReady = true
                 loadedPath = dir.absolutePath
-                CactusEngineHolder.currentHandle = handle
-                Log.i(TAG, "模型加载成功 handle=$handle 耗时 ${cost}ms")
+                CactusEngineHolder.currentHandle = h
+                Log.i(TAG, "模型加载成功 handle=$h 耗时 ${cost}ms")
                 onDone(true, "加载成功，耗时 ${cost}ms")
             } catch (t: Throwable) {
                 lastError = "加载异常: ${t.message}"
                 Log.e(TAG, "loadModel 失败", t)
                 onDone(false, lastError)
+            } finally {
+                loading = false
             }
         }
     }
@@ -295,12 +313,36 @@ class ModelBridge(private val context: Context) {
         serverSocket = null
     }
 
+    @Volatile private var destroying = false
+
+    /**
+     * 销毁模型。
+     *
+     * ⚠️ 绝不能在后加载线程还在跑 nativeInit 时调 nativeDestroy：
+     * native 层 mmap 了权重文件，init 中途被 destroy 会直接 SIGSEGV（无 Java 堆栈）。
+     * 这个环境里「进去就划掉」是最常见的操作，不防就等于必崩。
+     */
+    /**
+     * 销毁模型。
+     *
+     * ⚠️ 绝不能在后加载线程还在跑 nativeInit 时调 nativeDestroy：
+     * native 层 mmap 了权重文件，init 中途被 destroy 会直接 SIGSEGV（无 Java 堆栈）。
+     * 这个环境里「进去就划掉」是最常见的操作，不防就等于必崩。
+     */
     fun destroyModel() {
-        if (handle != 0L) {
-            try { CactusEngine.destroy(handle) } catch (_: Throwable) {}
+        destroying = true
+        // 加载中：只做标记，loadModelAsync 结束后自己丢弃句柄
+        if (loading) {
+            Log.i(TAG, "请求销毁时模型正在加载，标记后交由加载线程收尾")
+            return
+        }
+        val h = handle
+        if (h != 0L) {
+            try { CactusEngine.destroy(h) } catch (_: Throwable) {}
             handle = 0L
             modelReady = false
             loadedPath = ""
+            CactusEngineHolder.currentHandle = 0L
         }
     }
 
