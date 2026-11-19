@@ -5,7 +5,7 @@ import com.cactus.CactusEngine
 /**
  * 让上层不用直接摸 native 句柄。
  *
- * ⚠️ 关键：Cactus native 层会**保留**传进去的 char*/指针而不是拷贝
+ * ⚠️ 关键：Cactus native 层会**保留**传进去的 char 指针而不是拷贝
  * （官方 issue #66/#130 证实：needle_load 保留 buffer 指针，wrapper 释放后就 SIGSEGV）。
  *
  * 所以所有传进 native 的 Java 对象（消息 JSON、选项 JSON、回调）都必须在推理全程
