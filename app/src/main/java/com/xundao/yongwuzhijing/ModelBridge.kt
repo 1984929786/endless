@@ -76,12 +76,17 @@ class ModelBridge(private val context: Context) {
     private fun resolveModelDir(progress: (String) -> Unit = {}): File {
         val current = File(context.filesDir, "models/current")
 
+        // 有完成标记 = 上次已完整释放，直接信它（别每次都全量扫 327 个文件，慢且多余）
+        if (doneFlag.isFile && File(current, "config.txt").isFile) {
+            return current
+        }
+
         // 已就绪
         if (isUsableModelDir(current)) return current
 
         // 从 assets 搬运
         if (hasAssetModel()) {
-            progress("首次启动，正在释放内置模型（约 1.4GB，请稍候）")
+            progress("首次启动，正在释放内置模型（约 354MB，请稍候）")
             copyModelFromAssets(current, progress)
             if (isUsableModelDir(current)) return current
             progress("内置模型释放后仍不可用，尝试外部目录")
