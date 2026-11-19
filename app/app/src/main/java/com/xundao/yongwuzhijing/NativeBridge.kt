@@ -61,6 +61,26 @@ class NativeBridge(
     @JavascriptInterface
     fun lastStage(): String = CrashCatcher.lastStageText(context)
 
+    /** 内存状况，排查 OOM */
+    @JavascriptInterface
+    fun memInfo(): String {
+        return try {
+            val act = Runtime.getRuntime()
+            val sb = StringBuilder()
+            sb.append("heap").append(" ").append((act.totalMemory() - act.freeMemory()) / 1048576).append("MB/")
+                .append(act.maxMemory() / 1048576).append("MB")
+            val am = context.getSystemService(android.content.Context.ACTIVITY_SERVICE)
+                    as android.app.ActivityManager
+            val mi = android.app.ActivityManager.MemoryInfo()
+            am.getMemoryInfo(mi)
+            sb.append(" | 系统可用 ").append(mi.availMem / 1048576).append("MB")
+            sb.append(" | 低内存=").append(mi.lowMemory)
+            sb.toString()
+        } catch (t: Throwable) {
+            "未知"
+        }
+    }
+
     /** 把崩溃日志导出到应用外部可读的地方 */
     @JavascriptInterface
     fun exportCrash(): String {
@@ -120,14 +140,16 @@ class NativeBridge(
     // ---------------- 推理 ----------------
 
     /**
-     * 流式推理。JS 侧只拿最终完整文本；这里用内部回调拼。
-     * 单独线程 + 超时，绝不阻塞 UI。
+     * 推理。同步返回结果字符串，JS 在独立线程调用。
+     * 不能用「JS 线程 join 后台线程」——JS 线程持着锁 join 会造成 stalling。
+     * 直接在调用线程里跑 native（WebView 的 JS 调用本来就跑在非 UI 线程）。
      */
     @JavascriptInterface
     fun complete(payloadJson: String): String {
         if (!bridge.modelReady) return ""
         if (!busy.compareAndSet(false, true)) return ""
 
+        CrashCatcher.stage("推理开始")
         try {
             val payload = JSONObject(payloadJson)
             val arr = payload.optJSONArray("messages") ?: JSONArray()
@@ -142,32 +164,24 @@ class NativeBridge(
             }
 
             val opts = JSONObject()
-                .put("max_tokens", 512)
+                .put("max_tokens", 256)
                 .put("temperature", 0.7)
                 .put("auto_handoff", false)
 
-            var out: String? = null
-            val t = Thread {
-                out = try {
-                    CactusEngineHolder.complete(msgs.toString(), opts.toString())
-                } catch (th: Throwable) {
-                    Log.e(TAG, "complete failed", th)
-                    null
-                }
-            }
-            t.start()
-            t.join(120_000)
-
-            if (t.isAlive) {
-                Log.w(TAG, "推理超时")
-                try { CactusEngineHolder.stop() } catch (_: Throwable) {}
-                return ""
+            val raw = try {
+                CactusEngineHolder.complete(msgs.toString(), opts.toString())
+            } catch (th: Throwable) {
+                Log.e(TAG, "complete failed", th)
+                CrashCatcher.stage("推理异常: ${th.message}")
+                null
             }
 
-            val raw = out ?: return ""
+            CrashCatcher.stage("推理完成")
+            if (raw == null) return ""
             return extractText(raw)
         } catch (t: Throwable) {
             Log.e(TAG, "complete throw", t)
+            CrashCatcher.stage("推理失败: ${t.message}")
             return ""
         } finally {
             busy.set(false)
