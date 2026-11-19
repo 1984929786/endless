@@ -47,10 +47,21 @@ fun interface CactusTokenCallback {
 /** Kotlin 友好的一层包装 */
 object CactusEngine {
 
+    @Volatile private var frameworkSet = false
+
     /** 加载模型目录，返回句柄（0 = 失败） */
-    fun init(modelDir: String): Long = CactusJNI.nativeInit(modelDir, null, false)
+    fun init(modelDir: String): Long {
+        if (!frameworkSet) {
+            try { CactusJNI.nativeSetFramework() } catch (_: Throwable) {}
+            frameworkSet = true
+        }
+        return CactusJNI.nativeInit(modelDir, null, false)
+    }
 
     fun destroy(handle: Long) = CactusJNI.nativeDestroy(handle)
+
+    /** 中断正在进行的推理 */
+    fun stop(handle: Long) = CactusJNI.nativeStop(handle)
 
     /**
      * 同步对话。返回 Cactus 原始 JSON 字符串，失败返回 null。
