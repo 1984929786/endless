@@ -26,8 +26,8 @@ class ModelBridge(private val context: Context) {
 
         /** 外部 GGUF 模型路径候选，调试时可以直接放这里 */
         private val EXTERNAL_GGUF_PATHS = listOf(
-            "/storage/emulated/0/Download/Qwen3-0.6B-Q4_K_M.gguf",
-            "/sdcard/Download/Qwen3-0.6B-Q4_K_M.gguf",
+            "/storage/emulated/0/Download/Qwen3-1.7B-Q4_K_M.gguf",
+            "/sdcard/Download/Qwen3-1.7B-Q4_K_M.gguf",
             "/storage/emulated/0/Download/model.gguf",
             "/sdcard/Download/model.gguf"
         )

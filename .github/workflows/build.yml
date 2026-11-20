@@ -53,12 +53,12 @@ jobs:
         run: |
           set -e
           mkdir -p /tmp/mdl
-          URL="https://hf-mirror.com/unsloth/Qwen3-0.6B-GGUF/resolve/main/Qwen3-0.6B-Q4_K_M.gguf"
+          URL="https://hf-mirror.com/unsloth/Qwen3-1.7B-GGUF/resolve/main/Qwen3-1.7B-Q4_K_M.gguf"
           echo "下载: $URL"
           curl -fL --retry 3 --retry-delay 5 -o /tmp/mdl/model.gguf "$URL"
           SZ=$(stat -c%s /tmp/mdl/model.gguf)
           echo "大小: $SZ 字节 ($((SZ/1048576))MB)"
-          test "$SZ" -gt 300000000 || { echo "模型文件太小，下载失败"; exit 1; }
+          test "$SZ" -gt 900000000 || { echo "模型文件太小，下载失败"; exit 1; }
           # GGUF magic 校验：前 4 字节必须是 "GGUF"
           MAGIC=$(head -c 4 /tmp/mdl/model.gguf)
           echo "magic: $MAGIC"
@@ -70,7 +70,7 @@ jobs:
           DEST=app/app/src/main/assets/models
           rm -rf "$DEST"
           mkdir -p "$DEST"
-          cp /tmp/mdl/model.gguf "$DEST/Qwen3-0.6B-Q4_K_M.gguf"
+          cp /tmp/mdl/model.gguf "$DEST/Qwen3-1.7B-Q4_K_M.gguf"
           ls -lh "$DEST"
 
       - name: Build debug APK

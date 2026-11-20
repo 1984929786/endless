@@ -47,6 +47,8 @@ class NativeBridge(
     /** JS 轮询：返回 ready / loading:进度 / fail:原因 / staged:模型文件已就绪待加载 / idle */
     @JavascriptInterface
     fun status(): String {
+        // Agent 可用时，不需要本地模型也能聊天（工具全有）
+        if (AgentClient.enabled && AgentClient.probe()) return "agent"
         if (bridge.modelReady) return "ready"
         val err = lastLoadError
         if (err != null) return "fail:$err"
@@ -55,6 +57,21 @@ class NativeBridge(
         // 这个状态要持久化判断（看文件，不看进程内变量），冷启动也能认出来。
         if (bridge.hasStagedModel()) return "staged"
         return "idle"
+    }
+
+    /** 当前是谁在回答：agent（有工具）/ local（仅聊天）/ off */
+    @JavascriptInterface
+    fun mode(): String {
+        if (!AgentClient.enabled) return "off"
+        return if (AgentClient.probe()) "agent" else "local"
+    }
+
+    /** 开关 Agent（工具能力）。关掉后只用本地模型。 */
+    @JavascriptInterface
+    fun setAgentEnabled(on: Boolean): String {
+        AgentClient.enabled = on
+        CrashCatcher.stage("Agent 开关: $on")
+        return if (on) "on" else "off"
     }
 
     /** 读崩溃日志（给用户看 / 发给我） */
@@ -173,27 +190,50 @@ class NativeBridge(
      */
     @JavascriptInterface
     fun complete(payloadJson: String): String {
-        if (!bridge.modelReady) return ""
-        if (!busy.compareAndSet(false, true)) return ""
+        CrashCatcher.stage("complete 进入")
 
-        CrashCatcher.stage("推理开始")
+        // 解析消息（本地模型和 Agent 都要用）
+        val messages: List<Triple<String, String, String>>
         try {
             val payload = JSONObject(payloadJson)
             val arr = payload.optJSONArray("messages") ?: JSONArray()
-            val msgs = JSONArray()
+            val list = ArrayList<Triple<String, String, String>>(arr.length())
             for (i in 0 until arr.length()) {
                 val m = arr.getJSONObject(i)
+                list.add(Triple(m.optString("role", "user"), m.optString("content", ""), ""))
+            }
+            messages = list
+        } catch (t: Throwable) {
+            Log.e(TAG, "payload 解析失败", t)
+            return ""
+        }
+
+        // ① 先问 OpenClaw（有手：文件/命令/浏览器/定时）
+        //    规格书：本地模型是脑，OpenClaw 是手。只靠 0.6B 是哑巴。
+        if (AgentClient.enabled) {
+            val r = AgentClient.chat(messages)
+            if (r.ok) {
+                CrashCatcher.stage("Agent 回复成功")
+                return r.text
+            }
+            Log.i(TAG, "Agent 不可用，回退本地模型: ${r.error}")
+            CrashCatcher.stage("Agent 回退: ${r.error}")
+        }
+
+        // ② 回退：本地模型（断网/网关没起时仍然能对话）
+        if (!bridge.modelReady) return ""
+        if (!busy.compareAndSet(false, true)) return ""
+
+        CrashCatcher.stage("本地推理开始")
+        try {
+            val msgs = JSONArray()
+            for (msg in messages) {
                 msgs.put(
                     JSONObject()
-                        .put("role", m.optString("role", "user"))
-                        .put("content", m.optString("content", ""))
+                        .put("role", msg.first)
+                        .put("content", msg.second)
                 )
             }
-
-            val opts = JSONObject()
-                .put("max_tokens", 256)
-                .put("temperature", 0.7)
-                .put("auto_handoff", false)
 
             val raw = try {
                 // llama.cpp 已开 Jinja 聊天模板（ai_chat.cpp use_jinja=true），

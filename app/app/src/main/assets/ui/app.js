@@ -37,6 +37,7 @@
     busy: false,
     modelReady: false,
     modelStaged: false,   // 模型文件已释放到磁盘，只差加载进内存
+    agentReady: false,    // OpenClaw 已连接 = 有工具（文件/命令/浏览器）
     sessionId: Date.now().toString(36),
     streaming: ''
   };
@@ -51,6 +52,12 @@
     // 只查状态，不触发加载
     call('status').then(function (s) {
       s = String(s || '');
+      // agent = OpenClaw 已连接，手已经装上了，不需要等本地模型
+      if (s === 'agent') {
+        setBoot('就绪', 100);
+        setTimeout(function () { enterMain(false, false, true); }, 250);
+        return;
+      }
       if (s === 'ready') {
         // 上次已经加载好（进程还活着），直接进
         setBoot('就绪', 100);
@@ -147,17 +154,28 @@
   };
 
   /** ready 参数决定徽标，不再无条件当成就绪 */
-  function enterMain(ready, staged) {
+  function enterMain(ready, staged, agent) {
     bootPage.classList.remove('active');
     mainPage.classList.add('active');
     state.modelReady = !!ready;
+    state.agentReady = !!agent;
+
+    // Agent 可用 = 有手（文件/命令/浏览器/定时），这才是 App 的正式形态。
+    // 本地模型只是断网兜底，不应该是拦路的门槛。
+    if (state.agentReady) {
+      setBadge('已连接 OpenClaw', true);
+      setReleaseHint('');
+      var ab = $('btnRelease'); if (ab) ab.classList.add('hidden');
+      return;
+    }
+
     if (ready) {
       setBadge('本地模型就绪', true);
       setReleaseHint('');
       var b = $('btnRelease'); if (b) b.classList.add('hidden');
       return;
     }
-    setBadge('模型未就绪', false);
+    setBadge('模型未就绪（离线仅本地）', false);
     // 模型文件已经释放过了 —— 只需加载进内存，不要再说「释放」
     // （道友 2026-11-21 反馈：第二次进去还要释放？）
     var btn = $('btnRelease');
@@ -268,8 +286,11 @@
     var text = inputEl.value.trim();
     if (!text || state.busy) return;
 
-    if (!state.modelReady) {
-      pushError('模型还没准备好，请稍候…');
+    // Agent 可用或有本地模型就放行。只有两者都没有才拦。
+    // （规格书：OpenClaw 是手，本地模型是断网兜底。
+    //   之前只看 modelReady，结果 Agent 已就绪还拦着人不让发——道友 2026-11-21 报的“答不上新闻”就是这个根源）
+    if (!state.agentReady && !state.modelReady) {
+      pushError('正在连接…若持续失败，请先在设置里查看网关状态');
       return;
     }
 
@@ -290,7 +311,7 @@
     // 计时器：让用户看到在干活
     var timer = setInterval(function () {
       var s = Math.round((Date.now() - t0) / 1000);
-      bubble.textContent = '思考中… ' + s + 's';
+      bubble.textContent = (state.agentReady ? '处理中（可能正在调用工具）… ' : '思考中… ') + s + 's';
     }, 500);
 
     var payload = JSON.stringify({ messages: state.messages.slice(-12) });
@@ -311,12 +332,16 @@
         if (!answer) {
           bubble.textContent = errMsg
             ? ('生成失败：' + errMsg)
-            : '这次没生成出正文（模型可能把额度花在内部推理上了）。再发一次试试。';
+            : '这次没生成出正文。再发一次试试。';
           bubble.parentElement.classList.add('msg-error');
         } else {
           bubble.textContent = answer;
           state.messages.push({ role: 'assistant', content: answer });
           saveSession();
+          // 每轮结束后重测模式：网关可能直上直下
+          call('mode').then(function (m) {
+            state.agentReady = (String(m) === 'agent');
+          }).catch(function () {});
         }
 
         state.busy = false;
@@ -459,7 +484,7 @@
       subContent.innerHTML = '';
       subContent.appendChild(card(
         '当前模型',
-        (info.name || 'Qwen3-0.6B') + ' · 本地运行',
+        (info.name || 'Qwen3-1.7B') + ' · 本地运行',
         info.path ? '位置：' + info.path : ''
       ));
       subContent.appendChild(card(
