@@ -262,9 +262,10 @@ class NativeBridge(
                 } else {
                     history.toString().trim()
                 }
-                // Qwen3 默认会输出 <think>…</think> 内部推理，白占 token 还把正文截断。
-                // 官方开关是用户消息末尾加 /no_think，但只在 Jinja 模板下生效。
-                LlamaEngine.complete(prompt + "\n/no_think", sys)
+                // 思考开关已在原生层用 enable_thinking=false 关掉（ai_chat.cpp）。
+                // 不要再在这里拼 /no_think——这版 Qwen3 模板里根本没这个关键字，
+                // 拼上去只会变成 prompt 噪音（2026-11-21 读 GGUF 模板确认）。
+                LlamaEngine.complete(prompt, sys)
             } catch (th: Throwable) {
                 Log.e(TAG, "complete failed", th)
                 CrashCatcher.stage("推理异常: ${th.message}")

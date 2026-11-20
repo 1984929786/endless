@@ -291,20 +291,44 @@ static std::string chat_add_and_format(const std::string &role, const std::strin
     common_chat_msg new_msg;
     new_msg.role = role;
     new_msg.content = content;
+    chat_msgs.push_back(new_msg);
+
+    // 用 common_chat_templates_apply 而不是 format_single：
+    // 只有 apply 能接受 enable_thinking 参数。
+    //
+    // 为什么必须关思维（2026-11-21 实读 GGUF 模板得到的结论）：
+    // Qwen3 模板里是这段——
+    //   {%- if enable_thinking is defined and enable_thinking is false %}
+    //       {{- '<think>\n\n</think>\n\n' }}
+    //   {%- endif %}
+    // 也就是关思维靠的是模板**变量** enable_thinking=false，
+    // 而不是网上传的 /no_think 文本——这份模板里根本没有 no_think。
+    // 我先前加在 prompt 尾巴的 /no_think 是无效的（已删）。
+    // 不关的后果：0.6B/1.7B 会把额度全花在 <think> 里，正文被截断成空。
     std::string formatted;
-    // use_jinja=true 才能用上 GGUF 自带的 ChatML 模板：
-    // Qwen3 的 /no_think、<|im_start|> 结构全靠它。没模板时模型只能瞎猜，
-    // 表现就是自说自话、思考内容外泄（道友 2026-11-21 截图）。
-    // 但模板异常不能连带推理一起死 → 退到非 jinja 路径，至少能回话。
     try {
-        formatted = common_chat_format_single(
-                g_chat_templates.get(), chat_msgs, new_msg, role == ROLE_USER, /* use_jinja */ true);
+        common_chat_templates_inputs inputs;
+        inputs.messages = chat_msgs;
+        inputs.add_generation_prompt = (role == ROLE_USER);
+        inputs.use_jinja = true;
+        inputs.enable_thinking = false;
+
+        const auto params = common_chat_templates_apply(g_chat_templates.get(), inputs);
+        formatted = params.prompt;
     } catch (const std::exception &e) {
         LOGe("%s: jinja 模板失败，退回内置格式: %s", __func__, e.what());
-        formatted = common_chat_format_single(
-                g_chat_templates.get(), chat_msgs, new_msg, role == ROLE_USER, /* use_jinja */ false);
+        try {
+            // fallback：chat_msgs 里已经 push 了 new_msg，
+            // 而 format_single 自己会再把 new_msg 拼上，所以这里要传「不含最后一条」的历史。
+            std::vector<common_chat_msg> past(chat_msgs.begin(), chat_msgs.end() - 1);
+            formatted = common_chat_format_single(
+                    g_chat_templates.get(), past, new_msg, role == ROLE_USER,
+                    /* use_jinja */ false);
+        } catch (const std::exception &e2) {
+            LOGe("%s: 内置格式也失败: %s", __func__, e2.what());
+            formatted = content;
+        }
     }
-    chat_msgs.push_back(new_msg);
     LOGi("%s: Formatted and added %s message: \n%s\n", __func__, role.c_str(), formatted.c_str());
     return formatted;
 }
