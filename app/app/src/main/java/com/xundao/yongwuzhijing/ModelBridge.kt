@@ -74,6 +74,19 @@ class ModelBridge(private val context: Context) {
      * 2. APK assets/models 下的 .gguf —— 首次启动拷到私有目录
      * 3. 外部 Download 下同名文件 —— 调试用
      */
+    /**
+     * 模型文件是否已经在私有目录里（与进程生命周期无关）。
+     * 判断依据是文件本身，「模型已释放」这个事实不因 App 被杀而消失。
+     * 这样冷启动时 UI 能区分「还要释放」(idle) 和「只需加载」(staged)。
+     */
+    fun hasStagedModel(): Boolean {
+        return try {
+            findGguf(File(context.filesDir, "models")) != null
+        } catch (t: Throwable) {
+            false
+        }
+    }
+
     private fun resolveModelFile(progress: (String) -> Unit = {}): File? {
         val modelsDir = File(context.filesDir, "models")
 

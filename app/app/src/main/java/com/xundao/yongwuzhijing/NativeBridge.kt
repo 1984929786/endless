@@ -44,13 +44,16 @@ class NativeBridge(
         return "loading"
     }
 
-    /** JS 轮询：返回 ready / loading:进度描述 / fail:原因 */
+    /** JS 轮询：返回 ready / loading:进度 / fail:原因 / staged:模型文件已就绪待加载 / idle */
     @JavascriptInterface
     fun status(): String {
         if (bridge.modelReady) return "ready"
         val err = lastLoadError
         if (err != null) return "fail:$err"
         if (loading.get()) return "loading:" + (lastProgress ?: "正在加载模型…")
+        // 模型文件已经释放到私有目录了 —— 不是「还要释放」，只是需要加载进内存。
+        // 这个状态要持久化判断（看文件，不看进程内变量），冷启动也能认出来。
+        if (bridge.hasStagedModel()) return "staged"
         return "idle"
     }
 

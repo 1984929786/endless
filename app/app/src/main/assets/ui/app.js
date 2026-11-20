@@ -36,6 +36,7 @@
     messages: [],      // {role, content}
     busy: false,
     modelReady: false,
+    modelStaged: false,   // 模型文件已释放到磁盘，只差加载进内存
     sessionId: Date.now().toString(36),
     streaming: ''
   };
@@ -56,10 +57,12 @@
         setTimeout(function () { enterMain(true); }, 250);
         return;
       }
+      // staged = 模型文件已释放过，只差加载进内存
+      var staged = (s === 'staged');
       // 其它情况一律进主界面，模型状态由用户手动触发
       setBoot('界面就绪', 100);
       setTimeout(function () {
-        enterMain(false);
+        enterMain(false, staged);
         if (st) setReleaseHint('上次启动停在：' + st);
       }, 250);
     }).catch(function (e) {
@@ -144,7 +147,7 @@
   };
 
   /** ready 参数决定徽标，不再无条件当成就绪 */
-  function enterMain(ready) {
+  function enterMain(ready, staged) {
     bootPage.classList.remove('active');
     mainPage.classList.add('active');
     state.modelReady = !!ready;
@@ -152,8 +155,19 @@
       setBadge('本地模型就绪', true);
       setReleaseHint('');
       var b = $('btnRelease'); if (b) b.classList.add('hidden');
+      return;
+    }
+    setBadge('模型未就绪', false);
+    // 模型文件已经释放过了 —— 只需加载进内存，不要再说「释放」
+    // （道友 2026-11-21 反馈：第二次进去还要释放？）
+    var btn = $('btnRelease');
+    if (staged) {
+      state.modelStaged = true;
+      if (btn) { btn.classList.remove('hidden'); btn.textContent = '加载模型'; }
+      setReleaseHint('模型文件已就绪，点一下加载进内存（几秒）');
     } else {
-      setBadge('模型未就绪', false);
+      state.modelStaged = false;
+      if (btn) { btn.classList.remove('hidden'); btn.textContent = '释放内置模型'; }
     }
   }
 
@@ -163,11 +177,13 @@
     if (e) e.textContent = t || '';
   }
 
-  /** 用户点「释放内置模型」/ 重试时调用 */
+  /** 用户点「释放内置模型」/「加载模型」/ 重试时调用 */
   function loadModel() {
     if (state.modelReady) return;
     setBadge('模型加载中…', false);
-    setReleaseHint('正在释放内置模型（约 400MB，首次较慢）…');
+    setReleaseHint(state.modelStaged
+      ? '正在加载模型进内存…'
+      : '正在释放内置模型（约 400MB，首次较慢）…');
     pollStart = 0;
     if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
     call('loadModel').then(function () {
@@ -279,30 +295,35 @@
 
     var payload = JSON.stringify({ messages: state.messages.slice(-12) });
 
-    // 延时到下一帧，先把气泡画出来再进同步推理
+    // 关键：call() 返回的是 Promise，必须 .then 拿值。
+    // 之前写成 String(call(...)) 会把 Promise 对象转成 "[object Promise]"。
     setTimeout(function () {
-      var answer = '';
-      try {
-        answer = String(call('complete', payload) || '');
-      } catch (e) {
-        answer = '';
+      call('complete', payload).then(function (v) {
+        finish(String(v == null ? '' : v));
+      }).catch(function (e) {
+        finish('', e && e.message ? e.message : String(e));
+      });
+
+      function finish(answer, errMsg) {
+        clearInterval(timer);
+        bubble.classList.remove('typing');
+
+        if (!answer) {
+          bubble.textContent = errMsg
+            ? ('生成失败：' + errMsg)
+            : '没有生成内容。可能是内存不足，试着关掉其他应用重试。';
+          bubble.parentElement.classList.add('msg-error');
+        } else {
+          bubble.textContent = answer;
+          state.messages.push({ role: 'assistant', content: answer });
+          saveSession();
+        }
+
+        state.busy = false;
+        sendBtn.disabled = false;
+        autoGrow();
+        scrollBottom();
       }
-
-      clearInterval(timer);
-      bubble.classList.remove('typing');
-
-      if (!answer) {
-        bubble.textContent = '没有生成内容。可能是内存不足，试着关掉其他应用重试。';
-        bubble.parentElement.classList.add('msg-error');
-      } else {
-        bubble.textContent = answer;
-        state.messages.push({ role: 'assistant', content: answer });
-        saveSession();
-      }
-
-      state.busy = false;
-      autoGrow();
-      scrollBottom();
     }, 60);
   }
 
