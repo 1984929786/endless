@@ -23,13 +23,17 @@ class YwzjApp : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        // 先装阶段性记录仪，再做任何事 —— 后面任何一行崩了都能看到停在哪
+        Stage.attach(this)
         Boot.trace(this, "Application.onCreate")
         Thread.setDefaultUncaughtExceptionHandler { t, e ->
+            Stage.javaCrash(t, e)
             Boot.crash(this, t, e)
             // 继续走系统默认处理（让系统也记一份）
             val prev = Thread.getDefaultUncaughtExceptionHandler()
             prev?.uncaughtException(t, e)
         }
+        Stage.mark("onCreate 完成")
     }
 }
 

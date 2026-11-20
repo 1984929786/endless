@@ -271,12 +271,20 @@ class ModelBridge(private val context: Context) {
         Boot.trace(context, "loadModelAsync 开始")
         pool.execute {
             try {
+                Stage.mark("loadModelAsync: 进入后台线程")
                 val dir = resolveModelDir { msg -> Log.i(TAG, msg); onProgress(msg) }
+                Stage.mark("resolveModelDir 完成 -> ${dir.absolutePath}")
                 Log.i(TAG, "加载模型: ${dir.absolutePath}")
                 if (!dir.isDirectory) {
                     lastError = "模型目录不存在: ${dir.absolutePath}"
                     onDone(false, lastError); return@execute
                 }
+                // 把目录内容清点一遍写进日志：文件数 + 总字节 + 关键文件在不在
+                val (nFiles, nBytes) = countDir(dir)
+                val hasCfg = File(dir, "config.txt").isFile
+                val nWeights = (dir.listFiles() ?: emptyArray()).count { it.name.endsWith(".weights") }
+                Stage.mark("模型目录清点: ${nFiles}个文件 ${nBytes / 1048576}MB weights=${nWeights} config=${hasCfg}")
+
                 modelReady = false
                 val t0 = System.currentTimeMillis()
                 // 关键：native 层保留 char 指针不拷贝（官方 issue #66/#130），
@@ -284,9 +292,35 @@ class ModelBridge(private val context: Context) {
                 // 用字段持有，不用局部变量。
                 heldModelDir = dir.absolutePath
                 val modelDir = dir.absolutePath
-                Boot.trace(context, "nativeInit 开始: $modelDir")
-                val h = CactusEngine.init(modelDir)
+
+                // ---- 逐步进入 native，每一步都先落盘 ----
+                Stage.mark("准备 loadLibrary，先看 .so 在不在")
+                val nativeLibDir = context.applicationInfo.nativeLibraryDir
+                val soFile = File(nativeLibDir, "libcactus.so")
+                Stage.mark("nativeLibraryDir=$nativeLibDir; libcactus.so 存在=${soFile.isFile} 大小=${if (soFile.isFile) soFile.length() else -1}")
+
+                Stage.mark("即将 System.loadLibrary(cactus)")
+                val libLoaded = try {
+                    CactusJNI.ensureLoaded()
+                    true
+                } catch (t: Throwable) {
+                    Stage.mark("loadLibrary 失败: ${t.message}")
+                    false
+                }
+                if (!libLoaded) {
+                    lastError = "libcactus.so 加载失败"
+                    onDone(false, lastError); return@execute
+                }
+                Stage.mark("loadLibrary 完成")
+
+                Stage.mark("即将 nativeSetFramework()")
+                CactusEngine.setFrameworkOnce()
+                Stage.mark("nativeSetFramework 完成")
+
+                Stage.mark("即将 cactus_init($modelDir, null, 1)")
+                val h = CactusEngine.initWith(modelDir, nativeFlag = 1)
                 val cost = System.currentTimeMillis() - t0
+                Stage.mark("cactus_init 返回 handle=$h 耗时${cost}ms")
                 Boot.trace(context, "nativeInit 返回 handle=$h 耗时${cost}ms")
 
                 // init 期间被要求销毁（退出了应用）：直接收尾，不把句柄交出去
@@ -299,8 +333,10 @@ class ModelBridge(private val context: Context) {
 
                 if (h == 0L) {
                     lastError = "cactus_init 失败: ${errText()}"
+                    Stage.mark("cactus_init 返回 0，错误: ${lastError}")
                     onDone(false, lastError); return@execute
                 }
+                Stage.mark("模型加载成功 handle=$h")
                 handle = h
                 modelReady = true
                 loadedPath = dir.absolutePath
@@ -309,15 +345,32 @@ class ModelBridge(private val context: Context) {
                 onDone(true, "加载成功，耗时 ${cost}ms")
             } catch (t: Throwable) {
                 lastError = "加载异常: ${t.message}"
+                Stage.mark("loadModel 异常: ${t.javaClass.simpleName}: ${t.message}")
                 Log.e(TAG, "loadModel 失败", t)
                 onDone(false, lastError)
             } finally {
                 loading = false
+                Stage.mark("loadModelAsync 退出")
             }
         }
     }
 
     private fun errText(): String = try { CactusEngine.lastError() } catch (t: Throwable) { "" }
+
+    /** 统计目录里文件数和总字节数（用于诊断日志） */
+    private fun countDir(dir: File): Pair<Int, Long> {
+        var n = 0
+        var bytes = 0L
+        try {
+            dir.walkTopDown().forEach { f ->
+                if (f.isFile) {
+                    n++
+                    bytes += f.length()
+                }
+            }
+        } catch (_: Throwable) {}
+        return Pair(n, bytes)
+    }
 
     fun startServer() {
         if (running) return

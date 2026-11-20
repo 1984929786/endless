@@ -20,8 +20,17 @@ package com.cactus
 class CactusJNI {
 
     companion object {
-        init {
+        @Volatile private var loaded = false
+
+        /**
+         * 首次调用时加载 .so。用了反汇编确认的签名，独立出来便于分阶段打点：
+         * 真崩溃就死在 loadLibrary 还是后面的 nativeInit，日志能分辨。
+         */
+        @Synchronized
+        fun ensureLoaded() {
+            if (loaded) return
             System.loadLibrary("cactus")
+            loaded = true
         }
 
         @JvmStatic external fun nativeSetFramework()
@@ -29,19 +38,19 @@ class CactusJNI {
         @JvmStatic external fun nativeSetCacheDir(cacheDir: String)
 
         /**
-         * 实测签名：(String modelPath, String corpusDir, int contextSize) -> long
-         * 反汇编依据（0x305804 起）：
-         *   x2=jstring 判空后 GetStringUTFChars  → modelPath
-         *   x3=jstring 判空后 GetStringUTFChars  → corpusDir
-         *   w4=x4 直接参与运算(12001ee8: and w8,w23,#0xff; 7100051f: cmp w8,#1)
-         *       → 是 int，不是 boolean
-         *   最后 cactus_init(path, size, corpus)
-         * 返回 0 表示失败。
+         * 实测签名：(String modelPath, String corpusDir, int flag) -> long
+         *
+         * ⚠️ 第三个参数**不是** token 数量，而是一个 0/1 开关。反汇编证据（0x305874）：
+         *      12001ee8  and  w8, w23, #0xff    ← 只取低 8 位
+         *      7100051f  cmp  w8, #1            ← 跟 1 比
+         *      1a9f17e2  cset w2, ne            ← 结果 (w8 != 1) 传给 cactus_init
+         *    所以传 65536 和传 0 效果相同（低 8 位都是 0）。
+         *    之前传 65536 是错的，虽然不会直接崩，但语义完全偏了。
          */
         @JvmStatic external fun nativeInit(
             modelPath: String,
             corpusDir: String?,
-            contextSize: Int
+            flag: Int
         ): Long
 
         @JvmStatic external fun nativeDestroy(handle: Long)
@@ -93,8 +102,11 @@ fun interface CactusTokenCallback {
 /** Kotlin 友好的一层包装 */
 object CactusEngine {
 
-    /** 实测默认上下文长度。65536 是 .so 内部 nativeComplete 的默认缓冲大小，取它对得上。 */
-    private const val DEFAULT_CONTEXT_SIZE = 65536
+    /**
+     * nativeInit 第 3 参数的默认值。反汇编确认它是 0/1 开关（and #0xff 后 cmp #1），
+     * 传 1 对应 cset ne 得 0，传其他值得 1。先用 1 试。
+     */
+    private const val NATIVE_FLAG = 1
 
     @Volatile private var frameworkSet = false
 
@@ -104,14 +116,24 @@ object CactusEngine {
      */
     @Volatile private var heldDir: String? = null
 
-    /** 加载模型目录，返回句柄（0 = 失败） */
-    fun init(modelDir: String, contextSize: Int = DEFAULT_CONTEXT_SIZE): Long {
+    /** 单独暴露出去，便于分阶段打点 */
+    fun setFrameworkOnce() {
+        if (frameworkSet) return
+        CactusJNI.nativeSetFramework()
+        frameworkSet = true
+    }
+
+    /** 直接用指定的 flag 调 nativeInit（带阶段控制的路径用这个） */
+    fun initWith(modelDir: String, nativeFlag: Int = NATIVE_FLAG): Long {
         heldDir = modelDir
-        if (!frameworkSet) {
-            try { CactusJNI.nativeSetFramework() } catch (_: Throwable) {}
-            frameworkSet = true
-        }
-        return CactusJNI.nativeInit(modelDir, null, contextSize)
+        CactusJNI.ensureLoaded()
+        return CactusJNI.nativeInit(modelDir, null, nativeFlag)
+    }
+
+    /** 加载模型目录，返回句柄（0 = 失败） */
+    fun init(modelDir: String, contextSize: Int = NATIVE_FLAG): Long {
+        setFrameworkOnce()
+        return initWith(modelDir, contextSize)
     }
 
     fun destroy(handle: Long) = CactusJNI.nativeDestroy(handle)
