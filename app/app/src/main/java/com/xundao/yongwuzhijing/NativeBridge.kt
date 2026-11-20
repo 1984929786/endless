@@ -209,7 +209,9 @@ class NativeBridge(
                         else -> pb.append("用户：").append(content).append("\n")
                     }
                 }
-                LlamaEngine.complete(pb.toString().trim(), sys)
+                // Qwen3 默认会输出 <think>…</think> 内部推理，白占 token 还把正文截断。
+                // 官方开关：用户消息末尾加 /no_think。
+                LlamaEngine.complete(pb.toString().trim() + "\n/no_think", sys)
             } catch (th: Throwable) {
                 Log.e(TAG, "complete failed", th)
                 CrashCatcher.stage("推理异常: ${th.message}")
@@ -228,21 +230,51 @@ class NativeBridge(
         }
     }
 
-    /** 从引擎返回的 JSON 里取正文；不是 JSON 就原样返回 */
+    /**
+     * 从引擎返回里取正文。
+     *
+     * Qwen3 是 thinking 模型，输出形如：
+     *   <think>…一大段内部推理…</think>\n\n真正的回复
+     * 思考过程绝不能展示给用户（道友 2026-11-21 截图反馈）。
+     * 另外当生成被 max_tokens 截断时，</think> 可能根本还没出现，
+     * 这时整段都是思考内容，正文为空 —— 宁可返回提示也不把思考当回复。
+     */
     private fun extractText(raw: String): String {
-        val s = raw.trim()
-        if (!s.startsWith("{")) return s
-        return try {
-            val o = JSONObject(s)
-            when {
-                o.has("response") -> o.optString("response")
-                o.has("text") -> o.optString("text")
-                o.has("content") -> o.optString("content")
-                else -> s
-            }
-        } catch (t: Throwable) {
-            s
+        var s = raw.trim()
+        // 不是 JSON 就直接当文本
+        if (s.startsWith("{")) {
+            s = try {
+                val o = JSONObject(s)
+                when {
+                    o.has("response") -> o.optString("response")
+                    o.has("text") -> o.optString("text")
+                    o.has("content") -> o.optString("content")
+                    else -> s
+                }
+            } catch (t: Throwable) { s }
         }
+        return stripThinking(s)
+    }
+
+    /** 剥掉 <think> 段。未闭合的思考段说明生成被截断，整段丢弃。 */
+    private fun stripThinking(input: String): String {
+        var s = input
+        // 1. 完整的 <think>…</think>（含变体标签）全部删掉
+        val closed = Regex("<\\s*(think|thinking|reasoning)\\s*>[\\s\\S]*?<\\s*/\\s*(think|thinking|reasoning)\\s*>",
+                RegexOption.IGNORE_CASE)
+        s = closed.replace(s, "")
+
+        // 2. 还有未闭合的 <think> 开头 —— 生成被截断，思考内容不完整
+        val openTag = Regex("<\\s*(think|thinking|reasoning)\\s*>", RegexOption.IGNORE_CASE)
+        if (openTag.containsMatchIn(s)) {
+            // 思考都没写完，正文一个也没有
+            return ""
+        }
+
+        // 3. 残留的孤立闭合标签也去掉
+        s = Regex("<\\s*/\\s*(think|thinking|reasoning)\\s*>", RegexOption.IGNORE_CASE).replace(s, "")
+
+        return s.trim()
     }
 
     // ---------------- 会话存储 ----------------

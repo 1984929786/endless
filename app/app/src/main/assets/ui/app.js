@@ -311,7 +311,7 @@
         if (!answer) {
           bubble.textContent = errMsg
             ? ('生成失败：' + errMsg)
-            : '没有生成内容。可能是内存不足，试着关掉其他应用重试。';
+            : '这次没生成出正文（模型可能把额度花在内部推理上了）。再发一次试试。';
           bubble.parentElement.classList.add('msg-error');
         } else {
           bubble.textContent = answer;
