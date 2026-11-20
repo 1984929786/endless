@@ -1,6 +1,7 @@
 package com.xundao.yongwuzhijing
 
 import com.cactus.CactusEngine
+import com.cactus.CactusJNI
 
 import android.content.Context
 import android.util.Log
