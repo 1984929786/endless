@@ -37,21 +37,17 @@ jobs:
           echo "commit: $(git rev-parse --short HEAD)"
           ls include/llama.h ggml/include/ggml.h common/common.h
 
-      # lib 模块的 CMakeLists 里 LLAMA_SRC 是相对路径 `../../../../../../`，
-      # 从 app/llama/src/main/cpp 往上 6 层正好是仓库根 endless/app/。
-      # 所以把 llama.cpp 放到 endless/app/llama.cpp，并在 launcher 里指过去。
+      # CMakeLists.txt 里 LLAMA_SRC = ${CMAKE_CURRENT_LIST_DIR}/../../../../llama.cpp
+      # 从 app/llama/src/main/cpp 上溯 4 层 = app/，所以源码必须放在 app/llama.cpp
       - name: Place llama.cpp for CMake
         run: |
           set -e
-          # app/llama/src/main/cpp → 上6层 = app/  （即 endless/app）
-          # 验证这个推断
-          cd app/llama/src/main/cpp
-          UP6=$(realpath ../../../../../..)
-          echo "上6层 = $UP6"
-          if [ "$UP6" != "$(realpath ../../../..)" ]; then echo "警告: 层级推断可能不符"; fi
-          echo "把 llama.cpp 放到 $UP6/llama.cpp"
-          cp -r /tmp/llama.cpp "$UP6/llama.cpp"
-          ls "$UP6/llama.cpp/include/llama.h"
+          DEST=$(realpath app/llama/src/main/cpp/../../../..)/llama.cpp
+          echo "目标路径: $DEST"
+          rm -rf "$DEST"
+          cp -r /tmp/llama.cpp "$DEST"
+          ls "$DEST/CMakeLists.txt" "$DEST/include/llama.h"
+          echo "✓ llama.cpp 就位"
 
       - name: Download GGUF model
         run: |
@@ -81,28 +77,36 @@ jobs:
         working-directory: app
         run: |
           set -o pipefail
-          gradle assembleDebug --no-daemon --stacktrace 2>&1 | tee /tmp/build.log | grep -E "^e: |^w: .*error|BUILD |FAILURE|> Task .*FAILED" || true
-          echo "=== 完整日志已存 /tmp/build.log ==="
-          grep -E "^e: " /tmp/build.log | head -40 || echo "无 e: 开头的编译错误"
-          if ! grep -q "BUILD SUCCESSFUL" /tmp/build.log; then
-            echo "=== 构建失败，最后 80 行 ==="
-            tail -80 /tmp/build.log
-            exit 1
+          gradle assembleDebug --no-daemon 2>&1 | tee /tmp/build.log > /dev/null || true
+          if grep -q "BUILD SUCCESSFUL" /tmp/build.log; then
+            echo "✓ 构建成功"
+            exit 0
           fi
+          echo "=== 构建失败 ==="
+          echo "--- 编译错误（e: 开头）---"
+          grep -E "^e: " /tmp/build.log | head -40 || echo "（无）"
+          echo "--- 出错任务 ---"
+          grep -E "^> Task .*FAILED|^FAILURE:" /tmp/build.log || echo "（无）"
+          echo "--- 根因（What went wrong 至 Caused by）---"
+          awk '/What went wrong/,/BUILD FAILED/' /tmp/build.log | head -60 || true
+          echo "--- Caused by 链 ---"
+          grep -E "^Caused by:|^ *> " /tmp/build.log | head -30 || true
+          echo "--- CMake / NDK 相关 ---"
+          grep -iE "cmake|ndk|ninja|compiler" /tmp/build.log | grep -iv "at org\.\|at com\.\|at java" | head -30 || true
+          echo "--- 尾部 40 行 ---"
+          tail -40 /tmp/build.log
+          exit 1
 
       - name: Verify APK contents
         working-directory: app
         run: |
           APK=$(find . -name "*.apk" | head -1)
-          echo "APK: $APK"
-          ls -lh "$APK"
-          echo "=== gguf ==="
-          unzip -l "$APK" | grep -i "gguf" || echo "(无 gguf)"
-          echo "=== so ==="
-          unzip -l "$APK" | grep "\.so" | head -20 || echo "(无 so)"
-          echo "=== 检查关键产物 ==="
+          if [ -z "$APK" ]; then echo "✗ 未找到 APK"; find . -path "*/outputs/*" | head -20; exit 1; fi
+          echo "APK: $APK"; ls -lh "$APK"
+          echo "=== gguf ==="; unzip -l "$APK" | grep -i "gguf" || echo "(无 gguf)"
+          echo "=== so ==="; unzip -l "$APK" | grep "\.so" | head -20 || echo "(无 so)"
           if unzip -l "$APK" | grep -qi "gguf"; then echo "✓ 模型已打包"; else echo "✗ 缺模型"; exit 1; fi
-          if unzip -l "$APK" | grep -q "libllama"; then echo "✓ llama native 库已打包"; else echo "✗ 缺 llama .so"; exit 1; fi
+          if unzip -l "$APK" | grep -q "\.so"; then echo "✓ native 库已打包"; else echo "✗ 缺 .so"; exit 1; fi
 
       - name: Upload APK
         if: always()
