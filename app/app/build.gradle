@@ -49,6 +49,9 @@ android {
         noCompress 'txt'
         noCompress 'json'
         noCompress 'jinja2'
+        // gguf 必须不压缩：1GB 模型压缩时 JVM 直接 Java heap space
+        // （2026-11-21 CI run 44786881843 就是这么挂的）
+        noCompress 'gguf'
     }
 
     // 模型随 APK 下发：CI 把模型解到 assets/models/current，首次启动释放到私有目录
