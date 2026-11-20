@@ -196,22 +196,35 @@ class NativeBridge(
                 .put("auto_handoff", false)
 
             val raw = try {
-                // llama.cpp 走纯文本，把 messages 拍成 prompt
+                // llama.cpp 已开 Jinja 聊天模板（ai_chat.cpp use_jinja=true），
+                // 模板会自动套 <|im_start|>user … <|im_start|>assistant。
+                // 这里千万不能再手写「用户：」「助手：」——双重包装会让模型只看得到噪音，
+                // 于是它自说自话（道友 2026-11-21 截图：思考内容外泄、后续不生成）。
                 var sys: String? = null
-                val pb = StringBuilder()
+                val history = StringBuilder()
+                var lastUser = ""
                 for (i in 0 until msgs.length()) {
                     val m = msgs.getJSONObject(i)
                     val role = m.optString("role", "user")
                     val content = m.optString("content", "")
                     when (role) {
                         "system" -> sys = if (sys.isNullOrBlank()) content else "$sys\n$content"
-                        "assistant" -> pb.append("助手：").append(content).append("\n")
-                        else -> pb.append("用户：").append(content).append("\n")
+                        "assistant" -> history.append("A: ").append(content).append("\n")
+                        else -> {
+                            history.append("Q: ").append(content).append("\n")
+                            lastUser = content
+                        }
                     }
                 }
+                // 只有一轮对话：直接把原话交给模板
+                val prompt = if (history.lines().count { it.isNotBlank() } <= 1) {
+                    lastUser
+                } else {
+                    history.toString().trim()
+                }
                 // Qwen3 默认会输出 <think>…</think> 内部推理，白占 token 还把正文截断。
-                // 官方开关：用户消息末尾加 /no_think。
-                LlamaEngine.complete(pb.toString().trim() + "\n/no_think", sys)
+                // 官方开关是用户消息末尾加 /no_think，但只在 Jinja 模板下生效。
+                LlamaEngine.complete(prompt + "\n/no_think", sys)
             } catch (th: Throwable) {
                 Log.e(TAG, "complete failed", th)
                 CrashCatcher.stage("推理异常: ${th.message}")

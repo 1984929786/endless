@@ -3,6 +3,7 @@
 #include <iomanip>
 #include <cmath>
 #include <string>
+#include <stdexcept>
 #include <unistd.h>
 #include <sampling.h>
 
@@ -290,8 +291,19 @@ static std::string chat_add_and_format(const std::string &role, const std::strin
     common_chat_msg new_msg;
     new_msg.role = role;
     new_msg.content = content;
-    auto formatted = common_chat_format_single(
-            g_chat_templates.get(), chat_msgs, new_msg, role == ROLE_USER, /* use_jinja */ false);
+    std::string formatted;
+    // use_jinja=true 才能用上 GGUF 自带的 ChatML 模板：
+    // Qwen3 的 /no_think、<|im_start|> 结构全靠它。没模板时模型只能瞎猜，
+    // 表现就是自说自话、思考内容外泄（道友 2026-11-21 截图）。
+    // 但模板异常不能连带推理一起死 → 退到非 jinja 路径，至少能回话。
+    try {
+        formatted = common_chat_format_single(
+                g_chat_templates.get(), chat_msgs, new_msg, role == ROLE_USER, /* use_jinja */ true);
+    } catch (const std::exception &e) {
+        LOGe("%s: jinja 模板失败，退回内置格式: %s", __func__, e.what());
+        formatted = common_chat_format_single(
+                g_chat_templates.get(), chat_msgs, new_msg, role == ROLE_USER, /* use_jinja */ false);
+    }
     chat_msgs.push_back(new_msg);
     LOGi("%s: Formatted and added %s message: \n%s\n", __func__, role.c_str(), formatted.c_str());
     return formatted;
