@@ -22,8 +22,11 @@
 #endif
 #endif
 
+// __android_log_is_loggable 是 API 30 才有的符号，而本工程 minSdk 26。
+// 它的作用只是按日志级别过滤，编译期就能决定，没必要为它抬高 minSdk。
+// 这里直接用宏比较代替，语义一致、零运行时开销。
 static inline int ai_should_log(int prio) {
-    return __android_log_is_loggable(prio, LOG_TAG, LOG_MIN_LEVEL);
+    return prio >= LOG_MIN_LEVEL;
 }
 
 #if LOG_MIN_LEVEL <= ANDROID_LOG_VERBOSE
