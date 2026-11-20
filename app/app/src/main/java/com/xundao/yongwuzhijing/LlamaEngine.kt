@@ -54,17 +54,26 @@ object LlamaEngine {
         return try {
             Stage.mark("LlamaEngine: 取 engine 实例")
             val e = AiChat.getInferenceEngine(context)
-            Stage.mark("LlamaEngine: engine 实例已拿到，初始化 backend")
-            // 首次访问会触发 native init，用协程阻塞等一下
-            runBlocking {
-                withTimeoutOrNull(30_000) {
-                    while (e.state.value !is InferenceEngine.State.Initialized &&
-                        e.state.value !is InferenceEngine.State.ModelReady &&
-                        e.state.value !is InferenceEngine.State.Uninitialized
-                    ) {
-                        kotlinx.coroutines.delay(50)
+            Stage.mark("LlamaEngine: engine 实例已拿到 state=${e.state.value}")
+            // ai_chat.cpp 在构造时就把 backend 绑好了，state 会直接从 Uninitialized 走到 Initialized。
+            // 若卡在 Initializing 或进了 Error，给 30 秒。”
+            val ok: Boolean? = runBlocking {
+                withTimeoutOrNull(30_000L) {
+                    var result: Boolean? = null
+                    while (result == null) {
+                        when (e.state.value) {
+                            is InferenceEngine.State.Initialized,
+                            is InferenceEngine.State.ModelReady -> result = true
+                            is InferenceEngine.State.Error -> result = false
+                            else -> kotlinx.coroutines.delay(50)
+                        }
                     }
+                    result
                 }
+            }
+            if (ok != true) {
+                Stage.mark("LlamaEngine: backend 初始化未成功 state=${e.state.value}")
+                return false
             }
             engine = e
             Stage.mark("LlamaEngine: backend 初始化完成 state=${e.state.value}")
@@ -96,18 +105,19 @@ object LlamaEngine {
 
         return try {
             val latch = CountDownLatch(1)
-            var ok = false
-            var err: String? = null
+            // 用 Atomic 引用而非局部 var：值在子线程写、主线程读，局部 var 跨协程不可见
+            val result = java.util.concurrent.atomic.AtomicBoolean(false)
+            val errRef = java.util.concurrent.atomic.AtomicReference<String?>(null)
 
             Stage.mark("LlamaEngine: 即将 loadModel()")
             scope.launch {
                 try {
                     e.loadModel(modelFile.absolutePath)
-                    ok = true
+                    result.set(true)
                     Stage.mark("LlamaEngine: loadModel 返回成功")
                 } catch (t: Throwable) {
-                    err = "${t.javaClass.simpleName}: ${t.message}"
-                    Stage.mark("LlamaEngine: loadModel 异常 $err")
+                    errRef.set("${t.javaClass.simpleName}: ${t.message}")
+                    Stage.mark("LlamaEngine: loadModel 异常 ${errRef.get()}")
                 } finally {
                     latch.countDown()
                 }
@@ -118,8 +128,8 @@ object LlamaEngine {
                 Stage.mark("LlamaEngine: loadModel 超时（10分钟）")
                 return false
             }
-            if (!ok) {
-                Stage.mark("LlamaEngine: 加载失败 $err")
+            if (!result.get()) {
+                Stage.mark("LlamaEngine: 加载失败 ${errRef.get()}")
                 return false
             }
             loaded = true
@@ -144,23 +154,33 @@ object LlamaEngine {
         val e = engine ?: return null
         return try {
             runBlocking {
-                stageMark("LlamaEngine: 推理开始")
+                this@LlamaEngine.stageMark("LlamaEngine: 推理开始")
                 if (!systemPrompt.isNullOrBlank()) {
                     e.setSystemPrompt(systemPrompt)
                 }
                 val sb = StringBuilder()
                 val job = launch {
-                    e.sendUserPrompt(prompt, DEFAULT_PREDICT_LENGTH).collect { piece ->
-                        sb.append(piece)
-                        // 防止模型失控刷爆内存
-                        if (sb.length > 512 * 1024) throw IllegalStateException("输出过长")
+                    try {
+                        e.sendUserPrompt(prompt, DEFAULT_PREDICT_LENGTH).collect { piece ->
+                            sb.append(piece)
+                            // 防止模型失控刷爆内存
+                            if (sb.length > 512 * 1024) {
+                                this@LlamaEngine.stageMark("LlamaEngine: 输出超长，主动停止")
+                                throw kotlinx.coroutines.CancellationException("输出过长")
+                            }
+                        }
+                    } catch (ce: kotlinx.coroutines.CancellationException) {
+                        // 超长截断或被外部取消，保留已经生成的部分
+                        this@LlamaEngine.stageMark("LlamaEngine: 生成被取消（已生成 ${sb.length} 字符）")
+                    } catch (t: Throwable) {
+                        this@LlamaEngine.stageMark("LlamaEngine: 生成异常 ${t.javaClass.simpleName}: ${t.message}")
                     }
                 }
                 // 最多等 5 分钟
                 val finished = withTimeoutOrNull(5 * 60 * 1000L) { job.join() }
                 if (finished == null) {
                     job.cancel()
-                    stageMark("LlamaEngine: 推理超时")
+                    this@LlamaEngine.stageMark("LlamaEngine: 推理超时")
                 }
                 sb.toString()
             }

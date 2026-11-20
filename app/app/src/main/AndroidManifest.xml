@@ -11,6 +11,7 @@
         android:theme="@style/Theme.YWZJ"
         android:allowBackup="false"
         android:largeHeap="true"
+        android:extractNativeLibs="true"
         android:hardwareAccelerated="true"
         android:supportsRtl="true">
 

@@ -79,7 +79,16 @@ jobs:
 
       - name: Build debug APK
         working-directory: app
-        run: gradle assembleDebug --no-daemon --stacktrace --info 2>&1 | tail -200
+        run: |
+          set -o pipefail
+          gradle assembleDebug --no-daemon --stacktrace 2>&1 | tee /tmp/build.log | grep -E "^e: |^w: .*error|BUILD |FAILURE|> Task .*FAILED" || true
+          echo "=== 完整日志已存 /tmp/build.log ==="
+          grep -E "^e: " /tmp/build.log | head -40 || echo "无 e: 开头的编译错误"
+          if ! grep -q "BUILD SUCCESSFUL" /tmp/build.log; then
+            echo "=== 构建失败，最后 80 行 ==="
+            tail -80 /tmp/build.log
+            exit 1
+          fi
 
       - name: Verify APK contents
         working-directory: app
@@ -87,10 +96,13 @@ jobs:
           APK=$(find . -name "*.apk" | head -1)
           echo "APK: $APK"
           ls -lh "$APK"
-          echo "=== APK 内 gguf:"
-          unzip -l "$APK" | grep -i "\.gguf" || echo "无 gguf"
-          echo "=== APK 内 so:"
-          unzip -l "$APK" | grep "\.so" | head -20 || echo "无 so"
+          echo "=== gguf ==="
+          unzip -l "$APK" | grep -i "gguf" || echo "(无 gguf)"
+          echo "=== so ==="
+          unzip -l "$APK" | grep "\.so" | head -20 || echo "(无 so)"
+          echo "=== 检查关键产物 ==="
+          if unzip -l "$APK" | grep -qi "gguf"; then echo "✓ 模型已打包"; else echo "✗ 缺模型"; exit 1; fi
+          if unzip -l "$APK" | grep -q "libllama"; then echo "✓ llama native 库已打包"; else echo "✗ 缺 llama .so"; exit 1; fi
 
       - name: Upload APK
         if: always()
