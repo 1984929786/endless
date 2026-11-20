@@ -50,7 +50,7 @@ object AgentClient {
         val now = System.currentTimeMillis()
         if (now - lastProbeAt < 15_000) return lastProbeOk
         lastProbeAt = now
-        lastProbeOk = try {
+        val ok = try {
             val c = open("/health", "GET")
             val code = c.responseCode
             c.disconnect()
@@ -59,6 +59,8 @@ object AgentClient {
             Log.i(TAG, "网关不可达: ${t.message}")
             false
         }
+        lastProbeOk = ok
+        return ok
     }
 
     /**
