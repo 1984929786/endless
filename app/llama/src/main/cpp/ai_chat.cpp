@@ -314,7 +314,9 @@ static std::string chat_add_and_format(const std::string &role, const std::strin
         inputs.enable_thinking = false;
 
         const auto params = common_chat_templates_apply(g_chat_templates.get(), inputs);
-        formatted = params.prompt;
+        // 新版 llama.cpp 的 params.prompt 是 common_chat_prompt（分片结构，
+        // 用于区分模板文本和用户输入），不是 std::string，必须 .str() 拿拼好的串。
+        formatted = params.prompt.str();
     } catch (const std::exception &e) {
         LOGe("%s: jinja 模板失败，退回内置格式: %s", __func__, e.what());
         try {
