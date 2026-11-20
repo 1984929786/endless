@@ -310,7 +310,16 @@ class NativeBridge(
         return stripThinking(s)
     }
 
-    /** 剥掉 <think> 段。未闭合的思考段说明生成被截断，整段丢弃。 */
+    /**
+     * 剥掉 <think> 段。
+     *
+     * 思考已在原生层用 enable_thinking=false 关掉（ai_chat.cpp），
+     * 这里是兵家副手：万一模型或模板行为变了，别把思维内容漏到界面上。
+     *
+     * 未闭合的处理变过：原来是整段丢。太狠了——若模型先写完正文
+     * 再开 think（罕见但可能），正文也跟着没了。改成只丢掉未闭合的那个标签
+     * 及其后面的内容，保留标签之前已经输出的东西。
+     */
     private fun stripThinking(input: String): String {
         var s = input
         // 1. 完整的 <think>…</think>（含变体标签）全部删掉
@@ -318,11 +327,11 @@ class NativeBridge(
                 RegexOption.IGNORE_CASE)
         s = closed.replace(s, "")
 
-        // 2. 还有未闭合的 <think> 开头 —— 生成被截断，思考内容不完整
+        // 2. 还有未闭合的 <think> —— 后面的内容都不完整，只保留它之前的部分
         val openTag = Regex("<\\s*(think|thinking|reasoning)\\s*>", RegexOption.IGNORE_CASE)
-        if (openTag.containsMatchIn(s)) {
-            // 思考都没写完，正文一个也没有
-            return ""
+        val m = openTag.find(s)
+        if (m != null) {
+            s = s.substring(0, m.range.first)
         }
 
         // 3. 残留的孤立闭合标签也去掉
