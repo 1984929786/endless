@@ -8,7 +8,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -23,54 +23,63 @@ jobs:
         run: |
           SDKMGR=$(find "$ANDROID_HOME" -name sdkmanager -type f | head -1)
           yes | "$SDKMGR" --licenses >/dev/null 2>&1 || true
-          "$SDKMGR" "platforms;android-34" "build-tools;34.0.0" > /dev/null
+          "$SDKMGR" "platforms;android-34" "build-tools;34.0.0" "cmake;3.22.1" "ndk;26.1.10909125" > /dev/null
           echo "SDK 就绪"
+          echo "NDK: $ANDROID_HOME/ndk/26.1.10909125"
 
-      - name: Restore native lib
-        working-directory: app
+      # llama.cpp 的 Android lib 模块要 add_subdirectory 整个源码树，
+      # 所以必须在这里 clone 一份（约 200MB，比 Cactus 预编译 .so 麻烦，但格式公开、可控）
+      - name: Clone llama.cpp source
         run: |
           set -e
-          GZ=app/src/main/jniLibs/arm64-v8a/libcactus.so.gz
-          gunzip -c "$GZ" > app/src/main/jniLibs/arm64-v8a/libcactus.so
-          rm -f "$GZ"
-          chmod 644 app/src/main/jniLibs/arm64-v8a/libcactus.so
-          ls -lh app/src/main/jniLibs/arm64-v8a/
+          git clone --depth 1 https://github.com/ggml-org/llama.cpp.git /tmp/llama.cpp
+          cd /tmp/llama.cpp
+          echo "commit: $(git rev-parse --short HEAD)"
+          ls include/llama.h ggml/include/ggml.h common/common.h
 
-      - name: Download model bundle
+      # lib 模块的 CMakeLists 里 LLAMA_SRC 是相对路径 `../../../../../../`，
+      # 从 app/llama/src/main/cpp 往上 6 层正好是仓库根 endless/app/。
+      # 所以把 llama.cpp 放到 endless/app/llama.cpp，并在 launcher 里指过去。
+      - name: Place llama.cpp for CMake
+        run: |
+          set -e
+          # app/llama/src/main/cpp → 上6层 = app/  （即 endless/app）
+          # 验证这个推断
+          cd app/llama/src/main/cpp
+          UP6=$(realpath ../../../../../..)
+          echo "上6层 = $UP6"
+          if [ "$UP6" != "$(realpath ../../../..)" ]; then echo "警告: 层级推断可能不符"; fi
+          echo "把 llama.cpp 放到 $UP6/llama.cpp"
+          cp -r /tmp/llama.cpp "$UP6/llama.cpp"
+          ls "$UP6/llama.cpp/include/llama.h"
+
+      - name: Download GGUF model
         run: |
           set -e
           mkdir -p /tmp/mdl
-          curl -fL --retry 3 -o /tmp/mdl/model.zip \
-            https://github.com/1984929786/endless/releases/download/models-v1/model-qwen3-06b.zip
-          ls -lh /tmp/mdl/model.zip
-          echo "校验大小:"
-          test $(stat -c%s /tmp/mdl/model.zip) -gt 300000000 || { echo "模型文件太小，下载失败"; exit 1; }
+          URL="https://hf-mirror.com/unsloth/Qwen3-0.6B-GGUF/resolve/main/Qwen3-0.6B-Q4_K_M.gguf"
+          echo "下载: $URL"
+          curl -fL --retry 3 --retry-delay 5 -o /tmp/mdl/model.gguf "$URL"
+          SZ=$(stat -c%s /tmp/mdl/model.gguf)
+          echo "大小: $SZ 字节 ($((SZ/1048576))MB)"
+          test "$SZ" -gt 300000000 || { echo "模型文件太小，下载失败"; exit 1; }
+          # GGUF magic 校验：前 4 字节必须是 "GGUF"
+          MAGIC=$(head -c 4 /tmp/mdl/model.gguf)
+          echo "magic: $MAGIC"
+          test "$MAGIC" = "GGUF" || { echo "不是合法的 GGUF 文件"; exit 1; }
 
-      - name: Unpack model into assets
+      - name: Put model into assets
         run: |
           set -e
-          DEST=app/app/src/main/assets/models/current
+          DEST=app/app/src/main/assets/models
           rm -rf "$DEST"
           mkdir -p "$DEST"
-          unzip -q /tmp/mdl/model.zip -d /tmp/mdl/x
-          # 模型 zip 可能自带一层目录，找到含 config.txt 的那层
-          SRC=$(dirname $(find /tmp/mdl/x -name config.txt | head -1))
-          echo "源目录: $SRC"
-          cp -r "$SRC"/. "$DEST"/
-          echo "=== assets 内文件数:"
-          ls "$DEST" | wc -l
-          ls "$DEST" | head -5
-          echo "=== 必需文件检查:"
-          test -f "$DEST/config.txt" || { echo "缺 config.txt"; exit 1; }
-          test -f "$DEST/tokenizer_config.txt" || echo "警告: 缺 tokenizer_config.txt"
-          W=$(ls "$DEST" | grep -c '\.weights$' || true)
-          echo ".weights 数量: $W"
-          test "$W" -gt 100 || { echo ".weights 数量异常"; exit 1; }
-          du -sh "$DEST"
+          cp /tmp/mdl/model.gguf "$DEST/Qwen3-0.6B-Q4_K_M.gguf"
+          ls -lh "$DEST"
 
       - name: Build debug APK
         working-directory: app
-        run: gradle assembleDebug --no-daemon --stacktrace
+        run: gradle assembleDebug --no-daemon --stacktrace --info 2>&1 | tail -200
 
       - name: Verify APK contents
         working-directory: app
@@ -78,10 +87,10 @@ jobs:
           APK=$(find . -name "*.apk" | head -1)
           echo "APK: $APK"
           ls -lh "$APK"
-          echo "=== APK 内 assets/models 条目数:"
-          unzip -l "$APK" | grep -c "assets/models/current/" || echo 0
+          echo "=== APK 内 gguf:"
+          unzip -l "$APK" | grep -i "\.gguf" || echo "无 gguf"
           echo "=== APK 内 so:"
-          unzip -l "$APK" | grep "\.so" || echo "无 so"
+          unzip -l "$APK" | grep "\.so" | head -20 || echo "无 so"
 
       - name: Upload APK
         if: always()

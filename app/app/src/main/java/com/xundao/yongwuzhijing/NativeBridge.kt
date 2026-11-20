@@ -193,7 +193,20 @@ class NativeBridge(
                 .put("auto_handoff", false)
 
             val raw = try {
-                CactusEngineHolder.complete(msgs.toString(), opts.toString())
+                // llama.cpp 走纯文本，把 messages 拍成 prompt
+                var sys: String? = null
+                val pb = StringBuilder()
+                for (i in 0 until msgs.length()) {
+                    val m = msgs.getJSONObject(i)
+                    val role = m.optString("role", "user")
+                    val content = m.optString("content", "")
+                    when (role) {
+                        "system" -> sys = if (sys.isNullOrBlank()) content else "$sys\n$content"
+                        "assistant" -> pb.append("助手：").append(content).append("\n")
+                        else -> pb.append("用户：").append(content).append("\n")
+                    }
+                }
+                LlamaEngine.complete(pb.toString().trim(), sys)
             } catch (th: Throwable) {
                 Log.e(TAG, "complete failed", th)
                 CrashCatcher.stage("推理异常: ${th.message}")
