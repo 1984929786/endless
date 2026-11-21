@@ -317,49 +317,18 @@ jobs:
           done
           echo "✓ 必需原生库齐全（名字均已核对）"
 
-          # === 清单与真实文件必须完全一致 ===
+          # === 清单与真实文件必须一致 ===
           # 2026-11-22 两次翻车的根因都在这里：
           #   ① App 释放时静默漏了 4466 个文件（递归 list 不可靠）
           #   ② AGP 默认 ignoreAssetsPattern 把 _/. 开头的文件静默丢掉，
           #      清单 52023 条 vs 包内 51350 条 → App 永远校验不过
           # 现在在 CI 里就把两边对平，不允许带偏差出包。
-          echo "=== 清单 vs 包内文件数比对 ==="
-          # 为什么用 python 读 zip：unzip -l 的输出列对齐会被长文件名/空格挤断，
-          # grep 再过滤就会把行首截掉的路径算错（2026-11-22 连踩两轮）。
-          # 直接读 zip 中央目录，文件名是精确的原串，不会错。
-          python3 - "$APK" <<'PY'
-import sys, zipfile, io
-apk = sys.argv[1]
-P = 'assets/openclaw/runtime/'
-z = zipfile.ZipFile(apk)
-inpkg = set(n[len(P):] for n in z.namelist()
-            if n.startswith(P) and not n.endswith('/'))
-mani = [l for l in z.read('assets/openclaw/manifest.txt').decode('utf-8').split('\n') if l.strip()]
-mani_set = set(mani)
-print('清单 %d 条 / 包内 %d 个' % (len(mani), len(inpkg)))
-lack = sorted(mani_set - inpkg)
-extra = sorted(inpkg - mani_set)
-if lack:
-    print('✗ 清单有而包里没有 %d 个（App 会校验失败）:' % len(lack))
-    for x in lack[:10]: print('   ', x)
-    sys.exit(1)
-if extra:
-    print('⚠ 包内多出 %d 个（无害，通常是 aapt 附带产物）:' % len(extra))
-    for x in extra[:5]: print('   ', x)
-print('✓ 清单 %d 条全部在包内' % len(mani))
-PY
-          # 抽查曾被 aapt 丢掉的目录，防止回归
-          python3 - "$APK" <<'PY'
-import sys, zipfile
-z = zipfile.ZipFile(sys.argv[1])
-names = z.namelist()
-for need in ('assets/openclaw/runtime/node_modules/openai/_vendor/',
-             'assets/openclaw/runtime/dist/extensions/discord/node_modules/@buape/carbon/node_modules/discord-api-types/_interactions/'):
-    if not any(n.startswith(need) for n in names):
-        print('✗ 被丢弃:', need, '—— ignoreAssetsPattern 未生效')
-        sys.exit(1)
-print('✓ _ 开头的目录已正常打包')
-PY
+          #
+          # 注意：校验逻辑写成 tools/apk_verify.js，**不要 inline heredoc**。
+          # 2026-11-22 血教训：在 run: | 里嵌 python heredoc 之后，GitHub 直接
+          # 判定 workflow「没有 workflow_dispatch 触发器」，dispatch 一律 422，
+          # 而 YAML 本身看起来又没错 —— 排查代价 = 几轮 15 分钟的构建。
+          node tools/apk_verify.js "$APK"
 
       - name: Upload APK
         if: always()
