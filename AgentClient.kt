@@ -46,7 +46,12 @@ object AgentClient {
      */
     val PORTS = intArrayOf(GatewayLauncher.PORT)
 
-    /** 上一次探活成功的端口，-1 表示还没有 */
+    /**
+     * 上一次探活成功的端口，-1 表示还没有。
+     *
+     * 2026-11-21 的坑：probe() 只改局部变量、从不写 activePort，结果 chat() 永远用
+     * PORTS[0]=18800 去发（恰好对）。一旦 PORT 变了这里就会错位，所以探活成功必须回填。
+     */
     @Volatile private var activePort = -1
 
     /** 网关 token。
@@ -54,8 +59,12 @@ object AgentClient {
      * 内嵌网关首次启动会自己生成一个写进 OPENCLAW_CONFIG_PATH，
      * 所以这个默认值只在「连外部网关」时才用得上。
      * B 方案下真实 token 应该在启动后从 config 里读出来（见 GatewayLauncher）。
+     *
+     * 2026-11-21：从空串改成 GatewayLauncher.TOKEN。原因：旧包生成的配置是空的，
+     * loadToken() 读不到任何东西，于是每句话都带着空 key 请求 → 网关 401 →
+     * 界面报「网关未运行，已切本地模型」，看起来像连不上，其实是没钥匙。
      */
-    @Volatile var token: String = ""
+    @Volatile var token: String = GatewayLauncher.TOKEN
 
     @Volatile var enabled: Boolean = true
 
@@ -179,7 +188,11 @@ object AgentClient {
             if (t.isNotEmpty()) {
                 token = t
                 true
-            } else false
+            } else {
+                // 配置里没 token 不代表不能连：内嵌网关跑的就是我们写死的那把钥匙
+                token = GatewayLauncher.TOKEN
+                false
+            }
         } catch (e: Throwable) {
             Log.i(TAG, "读 token 失败: ${e.message}")
             false
@@ -214,9 +227,14 @@ object AgentClient {
                 .put("stream", false)
                 .toString()
 
+            // 2026-11-21：user 字段只决定会话归属，网关还会按 channel 再分一层，
+            // 有时候落到不同会话里就变成「忘了刚才说什么」。显式给 session-key 头最稳。
+            lastChatNote = "POST /v1/chat/completions port=$port key=" + token.take(6)
+
             val c = open("/v1/chat/completions", "POST")
             c.doOutput = true
             c.setRequestProperty("Content-Type", "application/json")
+            c.setRequestProperty("x-openclaw-session-key", sessionKey)
             val out = c.outputStream
             out.write(body.toByteArray(Charsets.UTF_8))
             out.flush()
@@ -259,8 +277,7 @@ object AgentClient {
     }
 
     private fun open(path: String, method: String): HttpURLConnection {
-        val port = if (activePort > 0) activePort else PORTS[0]
-        val c = URL("http://$HOST:$port$path").openConnection() as HttpURLConnection
+        val port = if (activePort > 0) activePort else PORTS[0]        val c = URL("http://$HOST:$port$path").openConnection() as HttpURLConnection
         c.requestMethod = method
         c.connectTimeout = 8000          // 冷启动/模型加载中 CPU 吃满时，3 秒不够
         c.readTimeout = 180_000          // agent 可能跑工具，给足时间
@@ -282,8 +299,7 @@ object AgentClient {
                 if (code == 200) {
                     activePort = p
                     return p
-                }
-            } catch (_: Throwable) {
+                }            } catch (_: Throwable) {
                 // 换下一个端口
             }
         }

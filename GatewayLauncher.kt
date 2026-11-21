@@ -34,8 +34,20 @@ class GatewayLauncher(private val ctx: Context) {
     companion object {
         private const val TAG = "YwzjGw"
 
-        /** 内嵌网关端口。**不能是 18789（寻道在用）也不能是 18790（本地模型）。** */
+        /**
+         * 内嵌网关端口。**不能是 18789（寻道在用）也不能是 18790（本地模型）。**
+         */
         const val PORT = 18800
+
+        /**
+         * 本 App 内嵌网关的固定 token。
+         *
+         * 为什么写死而不用网关自己生成：网关自动生成的 token 只在日志里出现一次，
+         * 而且我们这份配置如果生成得不对（2026-11-21 现场就是空的），App 侧根本读不到，
+         * 只能带着空 key 去请求，网关一律 401。写死一个本机私密串，两边必然一致。
+         * 只绑 loopback，不对外暴露。
+         */
+        const val TOKEN = "ywzj-3f9c41d8a7b04e25bb6e1d0c9f7a2c53"
 
         /** assets 里运行时目录名 */
         private const val ASSET_DIR = "openclaw"
@@ -212,18 +224,56 @@ class GatewayLauncher(private val ctx: Context) {
         return try {
             home.mkdirs()
             state.mkdirs()
-            if (configFile.exists()) return true
-            configFile.writeText(
-                """
-                {
-                  "gateway": {
-                    "bind": "loopback",
-                    "port": $PORT,
-                    "mode": "local"
-                  }
-                }
-                """.trimIndent()
-            )
+
+            // 旧版生成的配置只有 bind/port/mode，缺 auth 和 OpenAI 端点开关。
+            // 不能因为「文件已存在」就整份跳过，否则装过旧包的手机会一直带着坏配置。
+            val desired = buildString {
+                append("{\n")
+                append("  \"gateway\": {\n")
+                append("    \"mode\": \"local\",\n")
+                append("    \"bind\": \"loopback\",\n")
+                append("    \"port\": ").append(PORT).append(",\n")
+                append("    \"auth\": { \"mode\": \"token\", \"token\": \"").append(TOKEN).append("\" },\n")
+                append("    \"http\": { \"endpoints\": { \"chatCompletions\": { \"enabled\": true } } }\n")
+                append("  },\n")
+                append("  \"session\": { \"dmScope\": \"per-channel-peer\" }\n")
+                append("}\n")
+            }
+
+            val existing = if (configFile.exists()) configFile.readText() else ""
+            // 三个必须项：token 对得上、chatCompletions 开了、端口对
+            val ok = existing.contains(TOKEN) &&
+                    existing.contains("chatCompletions") &&
+                    existing.contains("\"port\": $PORT")
+            if (ok) return true
+
+            // 保留用户可能改过的其他字段：只要旧文件能解析，就把 gateway 段覆盖掉，其余不动
+            val merged = try {
+                if (existing.isNotBlank()) {
+                    val root = org.json.JSONObject(existing)
+                    val gw = org.json.JSONObject()
+                        .put("mode", "local")
+                        .put("bind", "loopback")
+                        .put("port", PORT)
+                        .put("auth", org.json.JSONObject().put("mode", "token").put("token", TOKEN))
+                        .put(
+                            "http", org.json.JSONObject().put(
+                                "endpoints", org.json.JSONObject().put(
+                                    "chatCompletions", org.json.JSONObject().put("enabled", true)
+                                )
+                            )
+                        )
+                    root.put("gateway", gw)
+                    if (!root.has("session")) {
+                        root.put("session", org.json.JSONObject().put("dmScope", "per-channel-peer"))
+                    }
+                    root.toString(2)
+                } else desired
+            } catch (_: Throwable) {
+                desired
+            }
+            configFile.writeText(merged)
+            Boot.trace(ctx, "网关配置已写入（token + chatCompletions 已开）")
             true
         } catch (t: Throwable) {
             lastError = "写配置失败: ${t.message}"
