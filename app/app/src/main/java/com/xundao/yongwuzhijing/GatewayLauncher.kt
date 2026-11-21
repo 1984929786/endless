@@ -265,40 +265,52 @@ class GatewayLauncher(private val ctx: Context) {
         }
         val available = nativeDir.list()?.toSet() ?: emptySet()
 
-        // 标准名 → 可能的实际文件名（按优先级）
+        // 标准名 → 需要的实际文件（前缀匹配，见下）
         //
-        // 为什么这么乱：Android 打包只接受 lib<name>.so 格式，Termux 的
-        // libicuuc.so.79.1 这种多级版本号会被静默丢弃。所以 CI 把它重命名成
-        // libicuuc79.so，运行时再建回标准名软链。下面每个条目都要列全所有可能。
-        val needs = mapOf(
-            "libcrypto.so.3" to listOf("libcrypto.so.3", "libcrypto3.so"),
-            "libssl.so.3" to listOf("libssl.so.3", "libssl3.so"),
-            "libz.so.1" to listOf("libz.so.1", "libz1.so", "libz13.so"),
-            "libsqlite3.so" to listOf("libsqlite3.so", "libsqlite354.so", "libsqlite3.so.3.54.1"),
-            "libicuuc.so.79" to listOf("libicuuc.so.79", "libicuuc79.so", "libicuuc.so.78", "libicuuc78.so"),
-            "libicui18n.so.79" to listOf("libicui18n.so.79", "libicui18n79.so", "libicui18n.so.78", "libicui18n78.so"),
-            "libicudata.so.79" to listOf("libicudata.so.79", "libicudata79.so", "libicudata.so.78", "libicudata78.so"),
-            "libcares.so" to listOf("libcares.so"),
-            "libc++_shared.so" to listOf("libc++_shared.so"),
+        // 为什么用前缀而不是写死名字：CI 把 Termux 的多级版本号改名成
+        // lib<name>_<版本>.so（如 libsqlite3.so.3.54.1 → libsqlite3_3_54_1.so）。
+        // 写死候选名单已经错过一次（2026-11-21：CI 当时叫 libsqlite33.so，
+        // 候选只有 libsqlite354.so，于是永远找不到）。
+        // 现在：每个标准名给一组前缀，在 nativeDir 里找第一个命中项。
+        val needs = listOf(
+            "libcrypto.so.3" to listOf("libcrypto3", "libcrypto_", "libcrypto.so"),
+            "libssl.so.3" to listOf("libssl3", "libssl_", "libssl.so"),
+            "libz.so.1" to listOf("libz1", "libz_", "libz.so"),
+            "libsqlite3.so" to listOf("libsqlite3_", "libsqlite3.so", "libsqlite33", "libsqlite354"),
+            "libicuuc.so.79" to listOf("libicuuc_", "libicuuc79", "libicuuc78", "libicuuc.so"),
+            "libicui18n.so.79" to listOf("libicui18n_", "libicui18n79", "libicui18n78", "libicui18n.so"),
+            "libicudata.so.79" to listOf("libicudata_", "libicudata79", "libicudata78", "libicudata.so"),
+            "libcares.so" to listOf("libcares"),
+            "libc++_shared.so" to listOf("libc++_shared")
         )
+
+        /**
+         * 在 nativeDir 里按前缀找 .so。
+         * 先精确匹配前缀本身，再匹配 `<前缀>_xxx.so` / `<前缀><数字>.so`。
+         */
+        fun findLib(prefix: String): File? {
+            val direct = File(nativeDir, if (prefix.endsWith(".so")) prefix else "$prefix.so")
+            if (direct.exists()) return direct
+            val hit = available.filter { it.startsWith(prefix) && it.endsWith(".so") }
+                .sortedBy { it.length }
+                .firstOrNull()
+            return if (hit == null) null else File(nativeDir, hit)
+        }
 
         return try {
             libDir.mkdirs()
-            for ((standard, candidates) in needs) {
-                // 已经能用标准名找到，跳过
-                val direct = File(nativeDir, standard)
-                if (direct.exists()) continue
+            for ((standard, prefixes) in needs) {
+                val dst = File(libDir, standard)
+                if (dst.exists()) continue
+                // 标准名已能直接用（包括未改名的库），跳过
+                if (File(nativeDir, standard).exists()) continue
 
-                val src = candidates.asSequence()
-                    .map { File(nativeDir, it) }
-                    .firstOrNull { it.exists() }
+                val src = prefixes.asSequence().mapNotNull { findLib(it) }.firstOrNull()
                 if (src == null) {
-                    lastError = "缺原生库: $standard（候选 ${candidates.joinToString()} 都不在）"
+                    lastError = "缺原生库: $standard（在 $nativeDir 找不到前缀 ${prefixes.joinToString()}）"
                     Boot.trace(ctx, lastError)
                     return false
                 }
-                val dst = File(libDir, standard)
-                if (dst.exists()) dst.delete()
                 try {
                     java.nio.file.Files.createSymbolicLink(dst.toPath(), src.toPath())
                     Boot.trace(ctx, "软链 $standard -> ${src.name}")

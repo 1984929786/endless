@@ -217,12 +217,16 @@ jobs:
               *.so)
                 new="$b" ;;
               *.so.*)
-                # libicuuc.so.79.1 -> 基名 libicuuc，主版本 79
+                # 用完整版本号，只把点换成下划线，绝不截断：
+                #   libsqlite3.so.3.54.1 -> libsqlite3_3_54_1.so
+                # 之前的写法取「主版本」（libsqlite3.so.3.54.1 -> libsqlite33.so）
+                # 一是会把 libssl.so.3 这类搞混，二是 Kotlin 侧候选名很难穷举，
+                # 2026-11-21 就是因为 libsqlite33.so 对不上报「缺 libsqlite3.so」。
                 base=${b%%.so.*}
                 rest=${b#*.so.}
-                major=${rest%%.*}
-                major=${major%%-*}
-                new="${base}${major}.so" ;;
+                rest=${rest//\./_}
+                rest=${rest%%-*}
+                new="${base}_${rest}.so" ;;
               *)
                 continue ;;
             esac
@@ -235,10 +239,13 @@ jobs:
           ls -lh "$DEST" | awk 'NR>1{print $5, $9}'
           echo "=== 校验必需库 ==="
           test -f "$DEST/libnode.so" || { echo "✗ libnode.so 缺失"; exit 1; }
-          for need in libicuuc* libicui18n* libicudata* libcrypto* libssl* libz[0-9]* libcares*; do
+          for need in libicuuc_* libicui18n_* libicudata_* libcrypto_* libssl_* libz_* libcares* libsqlite* libc++_shared*; do
             ls "$DEST"/$need >/dev/null 2>&1 || { echo "✗ 缺 $need"; exit 1; }
           done
           echo "✓ 原生库齐全"
+          echo "=== 生成库清单供 Kotlin 比对 ==="
+          ls "$DEST" | sort > /tmp/libs.txt
+          cat /tmp/libs.txt
 
       - name: Build debug APK
         working-directory: app
@@ -281,6 +288,18 @@ jobs:
           unzip -l "$APK" | grep -q "assets/openclaw/runtime/dist/index\.js" || { echo "✗ 缺 dist/index.js"; exit 1; }
           echo "✓ 网关运行时已打包"
           if unzip -l "$APK" | grep -q "\.so"; then echo "✓ native 库已打包"; else echo "✗ 缺 .so"; exit 1; fi
+          # 原生库命名必须和 Kotlin 侧候选对得上。
+          # 2026-11-21 教训：CI 把 libsqlite3.so.3.54.1 改名成 libsqlite33.so，
+          # Kotlin 找不到 → 装上后启动报「缺原生库」。现在两边必须同时命中。
+          echo "=== 强断言：必需原生库 ==="
+          for need in libnode.so libcares.so libc++_shared.so; do
+            unzip -l "$APK" | grep -q "lib/arm64-v8a/$need" || { echo "✗ 缺 $need"; exit 1; }
+          done
+          for pat in 'libicuuc_' 'libicui18n_' 'libicudata_' 'libcrypto_' 'libssl_' 'libz_' 'libsqlite3_'; do
+            unzip -l "$APK" | grep -q "lib/arm64-v8a/${pat}[0-9_]*\.so" || {
+              echo "✗ 缺 $pat* 类原生库（命名规则变了？同步改 GatewayLauncher.ensureSymlinks）"; exit 1; }
+          done
+          echo "✓ 必需原生库齐全（名字均已核对）"
 
       - name: Upload APK
         if: always()
