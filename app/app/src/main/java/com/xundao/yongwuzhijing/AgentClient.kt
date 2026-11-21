@@ -35,6 +35,33 @@ object AgentClient {
     private const val HOST = "127.0.0.1"
 
     /**
+     * 真实探一次 /health，返回可读结果（给「网关」页用）。
+     * 200 = 通了且 token 对；401 = 端口在但钥匙错；其它 = 不是网关。
+     */
+    fun healthLine(): String {
+        val port = if (activePort > 0) activePort else PORTS[0]
+        val t0 = System.currentTimeMillis()
+        return try {
+            val c = URL("http://$HOST:$port/health").openConnection() as HttpURLConnection
+            c.requestMethod = "GET"
+            c.connectTimeout = 3000
+            c.readTimeout = 3000
+            c.setRequestProperty("Authorization", "Bearer $token")
+            val code = c.responseCode
+            c.disconnect()
+            val ms = System.currentTimeMillis() - t0
+            when (code) {
+                200 -> "200 正常(${ms}ms)"
+                401, 403 -> "${code} token 不对(${ms}ms)"
+                404 -> "404 不是网关的路由"
+                else -> "$code(${ms}ms)"
+            }
+        } catch (t: Throwable) {
+            t.javaClass.simpleName + "(${System.currentTimeMillis() - t0}ms)"
+        }
+    }
+
+    /**
      * 内嵌网关端口。
      *
      * 【绝不能写 18790】—— 那是 App 自己 ModelBridge 的端口（本地模型 HTTP 服务）。
@@ -229,7 +256,8 @@ object AgentClient {
 
             // 2026-11-21：user 字段只决定会话归属，网关还会按 channel 再分一层，
             // 有时候落到不同会话里就变成「忘了刚才说什么」。显式给 session-key 头最稳。
-            lastChatNote = "POST /v1/chat/completions port=$port key=" + token.take(6)
+            lastChatNote = "POST /v1/chat/completions port=" + (if (activePort > 0) activePort else PORTS[0]) +
+                    " key=" + token.take(6)
 
             val c = open("/v1/chat/completions", "POST")
             c.doOutput = true

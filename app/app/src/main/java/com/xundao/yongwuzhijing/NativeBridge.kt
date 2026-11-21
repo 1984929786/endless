@@ -78,6 +78,49 @@ class NativeBridge(
         return if (on) "on" else "off"
     }
 
+    @JavascriptInterface
+    fun gwInfo(): String {
+        val o = JSONObject()
+        o.put("port", GatewayLauncher.PORT)
+        o.put("proc", try { GatewayLauncher.runningProcAlive() } catch (t: Throwable) { false })
+        o.put("probe", AgentClient.probe())
+        o.put("health", AgentClient.healthLine())
+        o.put("tokenHint", if (AgentClient.token.isEmpty()) "(空)" else AgentClient.token.take(8) + "…" + AgentClient.token.length + "位")
+        o.put("home", java.io.File(context.filesDir, "openclaw/home").absolutePath)
+        o.put("lastNote", AgentClient.lastChatNote)
+        o.put("err", AgentClient.lastProbeError)
+        // 端点开没开：直接看配置文件，不猜
+        val cfg = java.io.File(context.filesDir, "openclaw/home/openclaw.json")
+        val txt = try { if (cfg.exists()) cfg.readText() else "" } catch (e: Throwable) { "" }
+        o.put("chatEndpoint", txt.contains("chatCompletions"))
+        // 网关日志尾部：排障时不用拔手机
+        o.put("logTail", tail(java.io.File(context.filesDir, "openclaw/gateway.log"), 40))
+        return o.toString()
+    }
+
+    /** 真的发一句话给网关。返回可读结果，界面直接显示。 */
+    @JavascriptInterface
+    fun gwTest(): String {
+        val t0 = System.currentTimeMillis()
+        val r = AgentClient.chat(listOf(Triple("user", "只回答两个字：在线", "")), "ywzj-diag")
+        val ms = System.currentTimeMillis() - t0
+        return if (r.ok) "成功 ${ms}ms: " + r.text.take(60)
+        else "失败 ${ms}ms: " + r.error + " | " + AgentClient.lastChatNote
+    }
+
+    /** Agent 开关当前值 */
+    @JavascriptInterface
+    fun agentEnabled(): Boolean = AgentClient.enabled
+
+    private fun tail(f: java.io.File, n: Int): String {
+        return try {
+            if (!f.exists()) return "(无 gateway.log)"
+            f.readLines().takeLast(n).joinToString("\n")
+        } catch (e: Throwable) {
+            "(读日志失败: ${e.message})"
+        }
+    }
+
     /** 诊断摘要：上次完整调用卡在哪一环。装机不用翻日志。
      *  注意：这里**不再调 probe()**，只用缓存值。
      *  diag 是从 JS 异步拿的，再探一次会把结果拖后 3 秒甚至卡死。 */

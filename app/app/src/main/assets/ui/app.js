@@ -409,6 +409,7 @@
   var NAV_TITLE = {
     history: '历史会话',
     models: '模型管理',
+    gateway: '网关',
     settings: '设置',
     about: '关于'
   };
@@ -436,6 +437,7 @@
   function renderPage(name) {
     if (name === 'history') return renderHistory();
     if (name === 'models') return renderModels();
+    if (name === 'gateway') return renderGateway();
     if (name === 'settings') return renderSettings();
     if (name === 'about') return renderAbout();
   }
@@ -579,8 +581,98 @@
     subContent.appendChild(diag);
   }
 
-  function renderAbout() {
+  // ---------- 网关 ----------
+  // 目的：不用翻日志就知道「手」到底连上没有。
+  // 硬事实一共四层，从外到内：
+  //   ① 进程活没活 ② 端口通不通 ③ token 对不对（/health 401 vs 200）
+  //   ④ 一轮真实对话成不成（真跑 agent，会花几秒）
+  function renderGateway() {
     subContent.innerHTML = '';
+
+    var statusCard = card('内嵌网关', '正在检查…', '');
+    subContent.appendChild(statusCard);
+    var descEl = statusCard.querySelector('.card-desc');
+
+    var detailCard = document.createElement('div');
+    detailCard.className = 'card';
+    var dTitle = document.createElement('div');
+    dTitle.className = 'card-title';
+    dTitle.textContent = '链路明细';
+    detailCard.appendChild(dTitle);
+    var dPre = document.createElement('pre');
+    dPre.style.cssText = 'margin-top:10px;padding:10px;background:var(--bg);border-radius:8px;' +
+      'font-size:11px;line-height:1.6;max-height:240px;overflow:auto;' +
+      'white-space:pre-wrap;word-break:break-all;color:var(--fg-dim);';
+    dPre.textContent = '点「刷新」查看';
+    detailCard.appendChild(dPre);
+    subContent.appendChild(detailCard);
+
+    // 测试对话
+    var testCard = card('测试对话', '真的发一句话给网关，看回不回', '', {
+      btn: '测试',
+      onTap: function () {
+        testCard.querySelector('.card-desc').textContent = '正在等回复…';
+        call('gwTest').then(function (r) {
+          var s = String(r || '');
+          testCard.querySelector('.card-desc').textContent = s.slice(0, 200);
+        }).catch(function (e) {
+          testCard.querySelector('.card-desc').textContent = '失败: ' + e.message;
+        });
+      }
+    });
+    subContent.appendChild(testCard);
+
+    // Agent 开关
+    var toggleCard = card('工具能力', '关掉后只用语内置模型，不连网关', '', {
+      btn: '切换',
+      onTap: function () {
+        call('agentEnabled').then(function (on) {
+          call('setAgentEnabled', !on).then(function () {
+            toggleCard.querySelector('.card-desc').textContent = !on ? '已开启（有工具）' : '已关闭（仅聊天）';
+            refresh();
+          });
+        });
+      }
+    });
+    subContent.appendChild(toggleCard);
+
+    var refreshCard = card('刷新状态', '', '', {
+      btn: '刷新',
+      onTap: refresh
+    });
+    subContent.appendChild(refreshCard);
+
+    function refresh() {
+      descEl.textContent = '正在检查…';
+      call('gwInfo').then(function (json) {
+        var o;
+        try { o = JSON.parse(String(json || '{}')); } catch (e) { o = {}; }
+        var alive = o.proc === true;
+        var probe = o.probe === true;
+        var health = String(o.health || '?');
+        var head = alive ? (probe ? '运行中' : '进程在，端口不通') : '未运行';
+        descEl.textContent = head + '  ·  ' + health + '  ·  端口 ' + (o.port || '?');
+        var lines = [];
+        lines.push('进程: ' + (alive ? '活' : '停'));
+        lines.push('端口: ' + (o.port || '?') + ' → ' + health);
+        lines.push('端点: /v1/chat/completions ' + (o.chatEndpoint ? '已开' : '未开'));
+        lines.push('token: ' + (o.tokenHint || '(空)'));
+        lines.push('路径: ' + (o.home || '?'));
+        lines.push('上一轮: ' + (o.lastNote || '-'));
+        if (o.err) lines.push('错误: ' + o.err);
+        if (o.logTail) { lines.push(''); lines.push('— 网关日志尾部 —'); lines.push(o.logTail); }
+        dPre.textContent = lines.join('\n');
+        call('agentEnabled').then(function (on) {
+          toggleCard.querySelector('.card-desc').textContent = on ? '已开启（有工具）' : '已关闭（仅聊天）';
+        }).catch(function () {});
+      }).catch(function (e) {
+        descEl.textContent = '读取失败: ' + e.message;
+      });
+    }
+    refresh();
+  }
+
+  function renderAbout() {    subContent.innerHTML = '';
     subContent.appendChild(card('永无止境', '版本 1.2.0', '本地智能助手，所有对话留在本机'));
     subContent.appendChild(card('引擎', 'Cactus Engine v1.14', '为移动设备优化的本地推理引擎'));
     subContent.appendChild(card('模型', 'Qwen3 系列', '在骁龙/麒麟芯片上本地运行'));
