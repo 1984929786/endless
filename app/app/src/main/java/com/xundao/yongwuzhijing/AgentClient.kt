@@ -51,6 +51,9 @@ object AgentClient {
     /** 最近一次 chat 的结果摘要。装机上翻一次就知道卡在哪一环。 */
     @Volatile var lastChatNote: String = ""
 
+    /** 读上次探活缓存值（不发网络请求）。给 diag 用。 */
+    fun lastProbeOk(): Boolean = lastProbeOk
+
     /** 清空探活缓存，下一句话强制重新探测（诊断用）。 */
     fun resetProbe() {
         lastProbeAt = 0L
