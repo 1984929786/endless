@@ -324,33 +324,42 @@ jobs:
           #      清单 52023 条 vs 包内 51350 条 → App 永远校验不过
           # 现在在 CI 里就把两边对平，不允许带偏差出包。
           echo "=== 清单 vs 包内文件数比对 ==="
-          unzip -p "$APK" "assets/openclaw/manifest.txt" | grep -v '^$' > /tmp/mani.txt
-          MANI=$(wc -l < /tmp/mani.txt)
-          unzip -l "$APK" | grep "assets/openclaw/runtime/" | grep -v '/$' \
-            | sed 's|^.*assets/openclaw/runtime/||' | grep -v '^$' | sort > /tmp/inpkg.txt
-          INPKG=$(wc -l < /tmp/inpkg.txt)
-          # 两边都排序，grep -Fxv 才能可靠工作（不排序时 -f 仍然可用，但排序便于人看）
-          sort /tmp/mani.txt -o /tmp/mani.txt
-          echo "清单 $MANI 条 / 包内 runtime 文件 $INPKG 个"
-          # 硬判据：清单里的每一条必须都在包里。缺一个 = 坏包，直接失败。
-          LACK=$(grep -Fxv -f /tmp/inpkg.txt /tmp/mani.txt | head -10)
-          if [ -n "$LACK" ]; then
-            echo "✗ 清单有而包里没有（这些文件缺失，App 会校验失败）："
-            echo "$LACK"
-            exit 1
-          fi
-          # 反之：包里有清单之外的 3 个文件无所谓（通常是 aapt 附带产物），只报告不拦。
-          EXTRA=$(grep -Fxv -f /tmp/mani.txt /tmp/inpkg.txt | head -10)
-          if [ -n "$EXTRA" ]; then
-            echo "⚠ 包内多出（无害）: $(echo $EXTRA | tr '\n' ' ')"
-          fi
-          echo "✓ 清单 $MANI 条全部在包内"
-          # 逐个断言：清单里每一条都真在包里（防「数量对上但内容不对」）
-          echo "✓ 清单与包内容完全一致（$MANI 条）"
-          # 抽查两个曾被 aapt 丢掉的目录，防止回归
-          unzip -l "$APK" | grep -q "assets/openclaw/runtime/node_modules/openai/_vendor/" || {
-            echo "✗ openai/_vendor 被丢弃 —— ignoreAssetsPattern 未生效"; exit 1; }
-          echo "✓ _ 开头的目录已正常打包"
+          # 为什么用 python 读 zip：unzip -l 的输出列对齐会被长文件名/空格挤断，
+          # grep 再过滤就会把行首截掉的路径算错（2026-11-22 连踩两轮）。
+          # 直接读 zip 中央目录，文件名是精确的原串，不会错。
+          python3 - "$APK" <<'PY'
+import sys, zipfile, io
+apk = sys.argv[1]
+P = 'assets/openclaw/runtime/'
+z = zipfile.ZipFile(apk)
+inpkg = set(n[len(P):] for n in z.namelist()
+            if n.startswith(P) and not n.endswith('/'))
+mani = [l for l in z.read('assets/openclaw/manifest.txt').decode('utf-8').split('\n') if l.strip()]
+mani_set = set(mani)
+print('清单 %d 条 / 包内 %d 个' % (len(mani), len(inpkg)))
+lack = sorted(mani_set - inpkg)
+extra = sorted(inpkg - mani_set)
+if lack:
+    print('✗ 清单有而包里没有 %d 个（App 会校验失败）:' % len(lack))
+    for x in lack[:10]: print('   ', x)
+    sys.exit(1)
+if extra:
+    print('⚠ 包内多出 %d 个（无害，通常是 aapt 附带产物）:' % len(extra))
+    for x in extra[:5]: print('   ', x)
+print('✓ 清单 %d 条全部在包内' % len(mani))
+PY
+          # 抽查曾被 aapt 丢掉的目录，防止回归
+          python3 - "$APK" <<'PY'
+import sys, zipfile
+z = zipfile.ZipFile(sys.argv[1])
+names = z.namelist()
+for need in ('assets/openclaw/runtime/node_modules/openai/_vendor/',
+             'assets/openclaw/runtime/dist/extensions/discord/node_modules/@buape/carbon/node_modules/discord-api-types/_interactions/'):
+    if not any(n.startswith(need) for n in names):
+        print('✗ 被丢弃:', need, '—— ignoreAssetsPattern 未生效')
+        sys.exit(1)
+print('✓ _ 开头的目录已正常打包')
+PY
 
       - name: Upload APK
         if: always()
