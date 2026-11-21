@@ -334,6 +334,10 @@
             ? ('生成失败：' + errMsg)
             : '这次没生成出正文。再发一次试试。';
           bubble.parentElement.classList.add('msg-error');
+          // 失败时把诊断摘要也打出来 —— 装机排障不用再找日志文件
+          call('diag').then(function (d) {
+            bubble.textContent += '\n[诊断] ' + String(d);
+          }).catch(function () {});
         } else {
           bubble.textContent = answer;
           state.messages.push({ role: 'assistant', content: answer });
