@@ -74,6 +74,20 @@ class NativeBridge(
         return if (on) "on" else "off"
     }
 
+    /** 诊断摘要：上次完整调用卡在哪一环。装机不用翻日志。 */
+    @JavascriptInterface
+    fun diag(): String {
+        val sb = StringBuilder()
+        sb.append("enabled=").append(AgentClient.enabled)
+        sb.append(" probe=").append(if (AgentClient.probe()) "OK" else "FAIL")
+        if (AgentClient.lastProbeError.isNotBlank()) {
+            sb.append(" probeErr=").append(AgentClient.lastProbeError)
+        }
+        sb.append(" last=").append(AgentClient.lastChatNote.ifBlank { "(未调用过)" })
+        sb.append(" model=").append(if (bridge.modelReady) "ready" else "not-ready")
+        return sb.toString()
+    }
+
     /** 读崩溃日志（给用户看 / 发给我） */
     @JavascriptInterface
     fun crashLog(): String = CrashCatcher.read(context)
@@ -210,14 +224,16 @@ class NativeBridge(
 
         // ① 先问 OpenClaw（有手：文件/命令/浏览器/定时）
         //    规格书：本地模型是脑，OpenClaw 是手。只靠 0.6B 是哑巴。
+        CrashCatcher.stage("Agent 尝试: enabled=${AgentClient.enabled} 消息${messages.size}条")
         if (AgentClient.enabled) {
+            AgentClient.resetProbe()
             val r = AgentClient.chat(messages)
             if (r.ok) {
-                CrashCatcher.stage("Agent 回复成功")
+                CrashCatcher.stage("Agent 回复成功: ${AgentClient.lastChatNote}")
                 return r.text
             }
             Log.i(TAG, "Agent 不可用，回退本地模型: ${r.error}")
-            CrashCatcher.stage("Agent 回退: ${r.error}")
+            CrashCatcher.stage("Agent 回退: ${r.error} | ${AgentClient.lastChatNote}")
         }
 
         // ② 回退：本地模型（断网/网关没起时仍然能对话）
