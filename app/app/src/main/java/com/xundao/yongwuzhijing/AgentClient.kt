@@ -45,18 +45,38 @@ object AgentClient {
         val error: String = ""
     )
 
+    /** 探活失败的具体原因（空 = 没失败过）。写进 last_stage.txt 用于装机排障。 */
+    @Volatile var lastProbeError: String = ""
+
+    /** 最近一次 chat 的结果摘要。装机上翻一次就知道卡在哪一环。 */
+    @Volatile var lastChatNote: String = ""
+
+    /** 清空探活缓存，下一句话强制重新探测（诊断用）。 */
+    fun resetProbe() {
+        lastProbeAt = 0L
+        lastProbeOk = false
+        lastProbeError = ""
+        lastChatNote = ""
+    }
+
     /** 快速探活：网关在不在。3 秒超时，失败不打日志噪音。 */
     fun probe(): Boolean {
         val now = System.currentTimeMillis()
         if (now - lastProbeAt < 15_000) return lastProbeOk
         lastProbeAt = now
+        lastProbeError = ""
         val ok = try {
             val c = open("/health", "GET")
+            c.connectTimeout = 3000
+            c.readTimeout = 3000
             val code = c.responseCode
             c.disconnect()
+            if (code != 200) lastProbeError = "/health 返回 $code"
             code == 200
         } catch (t: Throwable) {
-            Log.i(TAG, "网关不可达: ${t.message}")
+            lastProbeError = (t.javaClass.simpleName + ": " + (t.message ?: "")) +
+                    " (host=$HOST port=$PORT)"
+            Log.i(TAG, "网关不可达: $lastProbeError")
             false
         }
         lastProbeOk = ok
@@ -70,8 +90,14 @@ object AgentClient {
      * @param sessionKey 稳定的会话标识，同一串消息共享上下文
      */
     fun chat(messages: List<Triple<String, String, String>>, sessionKey: String = "ywzj-app"): Result {
-        if (!enabled) return Result(false, "", "Agent 已关闭")
-        if (!probe()) return Result(false, "", "网关未运行，已切本地模型")
+        if (!enabled) {
+            lastChatNote = "Agent 已关闭"
+            return Result(false, "", "Agent 已关闭")
+        }
+        if (!probe()) {
+            lastChatNote = "探活失败: " + lastProbeError
+            return Result(false, "", "网关未运行，已切本地模型")
+        }
 
         return try {
             val arr = JSONArray()
@@ -99,22 +125,32 @@ object AgentClient {
 
             if (code !in 200..299) {
                 Log.w(TAG, "网关返回 $code")
+                lastChatNote = "HTTP $code: " + respText.take(160)
                 return Result(false, "", "网关返回 $code")
             }
 
             val obj = JSONObject(respText)
             val choices = obj.optJSONArray("choices")
-                ?: return Result(false, "", "响应缺少 choices")
-            if (choices.length() == 0) return Result(false, "", "响应 choices 为空")
+                ?: run {
+                    lastChatNote = "响应缺 choices: " + respText.take(120)
+                    return Result(false, "", "响应缺少 choices")
+                }
+            if (choices.length() == 0) {
+                lastChatNote = "choices 为空"
+                return Result(false, "", "响应 choices 为空")
+            }
 
             val msg = choices.getJSONObject(0).optJSONObject("message")
             val content = msg?.optString("content").orEmpty()
             if (content.isBlank()) {
+                lastChatNote = "空内容: " + respText.take(160)
                 return Result(false, "", "网关返回空内容")
             }
+            lastChatNote = "OK ${content.length}字"
             Result(true, content)
         } catch (t: Throwable) {
             Log.e(TAG, "调用失败", t)
+            lastChatNote = (t.javaClass.simpleName + ": " + (t.message ?: "")).take(160)
             Result(false, "", t.message ?: "网络异常")
         }
     }
