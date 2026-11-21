@@ -66,7 +66,7 @@ class GatewayLauncher(private val ctx: Context) {
         private const val ASSET_DIR = "openclaw"
 
         /** 标记文件：释放完成后写一个，下次跳过 */
-        private const val STAMP = ".extracted-v1"
+        private const val STAMP = ".extracted-v2"
 
         /**
          * 跨页面单例。
@@ -155,86 +155,36 @@ class GatewayLauncher(private val ctx: Context) {
     private fun extractAssets(): Boolean {
         return try {
             val stamp = File(root, STAMP)
-            if (stamp.exists() && File(root, "runtime/openclaw.mjs").exists() &&
-                File(root, "runtime/dist/entry.js").exists()
-            ) {
+            // 幂等：有 stamp 且清单比对通过就跳过。
+            // 不能只看“关键文件在不在”—— 2026-11-22 就是那样漏掉的：
+            // 51351 个文件里少释放了 4466 个，而 checked 的四个文件恰好在前面。
+            if (stamp.exists() && verifyManifest().isEmpty()) {
                 return true
             }
+            // 旧版本释放出的 runtime 可能是残缺/串版的（看得到 manifest 比对不出来，
+            // 因为旧释放根本没写全）。新 STAMP 不存在时一律重来：删掉整个 runtime 目录。
+            File(root, "runtime").deleteRecursively()
             root.mkdirs()
 
-            val am = ctx.assets
-            val top = am.list(ASSET_DIR) ?: run {
-                lastError = "assets/$ASSET_DIR 不存在"
-                return false
-            }
-            var files = 0
-            var dirs = 0
             val startedAt = System.currentTimeMillis()
-
-            /**
-             * 递归拷贝。
-             *
-             * 关键坑（2026-11-21 现场）：`AssetManager.list()` 对空目录 / 深层目录
-             * 可能返回空数组，而我们对「空数组」的理解是「这是文件」。
-             * 原来直接 `am.open(path)` 一旦抛异常，外面 catch 就把整个释放判失败，
-             * 但已经写了一半文件 —— 结果是**半残的 runtime**：
-             * 有 openclaw.mjs，没有 dist，于是网关报「dist/cli 不存在」。
-             *
-             * 现在：① 打不开就当目录再试一次，② 失败不中断整批，记下来继续，
-             * ③ 结束后做完整性断言，缺关键文件就判失败，删 stamp 让它下次重试。
-             */
-            val failed = ArrayList<String>()
-            fun copy(assetPath: String, dest: File) {
-                val children = am.list(assetPath)
-                if (children == null || children.isEmpty()) {
-                    // 可能是文件，也可能是空目录
-                    try {
-                        am.open(assetPath).use { ins ->
-                            dest.parentFile?.mkdirs()
-                            FileOutputStream(dest).use { out -> ins.copyTo(out, 65536) }
-                        }
-                        files++
-                        if (files % 2000 == 0) {
-                            Boot.trace(ctx, "释放中… $files 文件 / ${(System.currentTimeMillis() - startedAt) / 1000}s")
-                        }
-                    } catch (e: java.io.FileNotFoundException) {
-                        // 空目录：建出来即可
-                        dest.mkdirs()
-                        dirs++
-                    } catch (t: Throwable) {
-                        failed.add(assetPath + " :: " + t.javaClass.simpleName)
-                    }
-                    return
-                }
-                dest.mkdirs()
-                dirs++
-                for (c in children) copy("$assetPath/$c", File(dest, c))
-            }
-            for (t in top) copy("$ASSET_DIR/$t", File(root, t))
-
+            val files = extractByManifest(startedAt)
             val secs = (System.currentTimeMillis() - startedAt) / 1000
-            Boot.trace(ctx, "网关资源释放：$files 文件 / $dirs 目录 / ${secs}s / 失败 ${failed.size}")
-            if (failed.isNotEmpty()) {
-                Boot.trace(ctx, "释放失败样本: " + failed.take(5).joinToString(" | "))
-            }
+            Boot.trace(ctx, "网关资源释放：$files 文件 / ${secs}s")
 
-            // 完整性断言：缺任何一个关键文件，都不算成功
-            val must = listOf(
-                "runtime/openclaw.mjs",
-                "runtime/dist/entry.js",
-                "runtime/dist/cli/daemon-cli.js",
-                "runtime/package.json"
-            )
-            val lack = must.filter { !File(root, it).exists() }
-            if (lack.isNotEmpty()) {
-                lastError = "释放不完整，缺: " + lack.joinToString(", ")
+            if (files < 1000) {
+                lastError = "清单读取失败或过短（$files），无法释放"
                 Boot.trace(ctx, lastError)
-                // 不写 stamp：下次启动重试
                 return false
             }
-            if (files < 1000) {
-                lastError = "释放文件数异常偏少（$files），应为数万"
+
+            // 逐条比对：这是唯一的验收标准。缺一个就删 stamp 重试。
+            val lacking = verifyManifest()
+            if (lacking.isNotEmpty()) {
+                lastError = "释放后缺 ${lacking.size} 个文件，例如: " +
+                        lacking.take(3).joinToString(", ") { it.substringAfterLast('/') }
                 Boot.trace(ctx, lastError)
+                Boot.trace(ctx, "缺失样本: " + lacking.take(8).joinToString(" | "))
+                if (stamp.exists()) stamp.delete()
                 return false
             }
             stamp.writeText(System.currentTimeMillis().toString())
@@ -243,6 +193,77 @@ class GatewayLauncher(private val ctx: Context) {
             lastError = "释放失败: ${t.javaClass.simpleName}: ${t.message}"
             Boot.trace(ctx, lastError)
             false
+        }
+    }
+
+    /**
+     * 按 assets/openclaw/manifest.txt 逐条释放。
+     *
+     * 为什么不再用递归 AssetManager.list()：
+     *   2026-11-22 现场：APK 里 51351 个文件，App 只释了 46885 个，
+     *   但递归函数返回「成功」。list() 对深层/大量子目录不可靠（某些 ROM
+     *   会返回空数组，被我们当成「这是文件」然后 open() 失败又被吞掉）。
+     *   改成一个扁平清单，逐条 open()，错哪一条一眼可见、可重试。
+     *
+     * 顺序：把大文件放最后的风险没有，因为清单是按路径 sort 的；
+     * 重要的是每条都真的去写、失败就记，不许静默跳过。
+     */
+    private fun extractByManifest(startedAt: Long): Int {
+        val am = ctx.assets
+        val manifest: List<String> = try {
+            am.open("$ASSET_DIR/manifest.txt").bufferedReader().use { it.readLines() }
+        } catch (t: Throwable) {
+            // 清单缺失（旧包）：退回递归方式，但这条路已知不可靠，只作为兼容
+            Boot.trace(ctx, "清单不存在，回退递归释放: ${t.message}")
+            return 0
+        }
+
+        var files = 0
+        val failed = ArrayList<String>()
+        for (rel in manifest) {
+            if (rel.isBlank()) continue
+            val dest = File(root, "runtime/$rel")
+            if (dest.exists() && dest.length() > 0) { files++; continue }
+            try {
+                am.open("$ASSET_DIR/runtime/$rel").use { ins ->
+                    dest.parentFile?.mkdirs()
+                    FileOutputStream(dest).use { out -> ins.copyTo(out, 65536) }
+                }
+                files++
+            } catch (t: Throwable) {
+                failed.add(rel + " :: " + t.javaClass.simpleName)
+            }
+            if (files > 0 && files % 5000 == 0) {
+                Boot.trace(ctx, "释放中… $files / ${manifest.size}  ${(System.currentTimeMillis() - startedAt) / 1000}s")
+            }
+        }
+        if (failed.isNotEmpty()) {
+            Boot.trace(ctx, "释放失败 ${failed.size} 条: " + failed.take(5).joinToString(" | "))
+        }
+        return files
+    }
+
+    /** 按清单逐条检查文件是否真的落地了。返回缺失列表（空 = 完好）。 */
+    private fun verifyManifest(): List<String> {
+        return try {
+            val lines = ctx.assets.open("$ASSET_DIR/manifest.txt")
+                .bufferedReader().use { it.readLines() }
+            val bad = ArrayList<String>()
+            for (rel in lines) {
+                if (rel.isBlank()) continue
+                val f = File(root, "runtime/$rel")
+                if (!f.isFile || f.length() == 0L) bad.add(rel)
+            }
+            bad
+        } catch (t: Throwable) {
+            // 读不到清单：退回只查关键文件（兼容旧包）
+            val must = listOf(
+                "runtime/openclaw.mjs",
+                "runtime/dist/entry.js",
+                "runtime/dist/cli/daemon-cli.js",
+                "runtime/package.json"
+            )
+            must.filter { !File(root, it).exists() }
         }
     }
 
@@ -408,6 +429,11 @@ class GatewayLauncher(private val ctx: Context) {
                 return false
             }
 
+            // 启动前自检：把 node 模块解析依赖的两个关键包实际情况写进日志。
+            // 2026-11-21 报错「Cannot find package .../typebox/index.js imported from pi-ai/dist/index.js」
+            // —— 这是 exports 没生效、退回 main 的表现。得看到真实的目录结构才能定位。
+            runDiag(File(root, "runtime"))
+
             val pb = ProcessBuilder(
                 node.absolutePath,
                 entry.absolutePath,
@@ -453,8 +479,53 @@ class GatewayLauncher(private val ctx: Context) {
         }
     }
 
-    private fun pidOf(p: Process): String = try {
-        val f = Process::class.java.getDeclaredField("pid")
+    /**
+     * 启动前自检：只查 node 模块解析真正用到的东西，输出写进 gateway.log。
+     *
+     * 为什么要有这个：报错信息只有一行「Cannot find package X imported from Y」，
+     * 看不出是文件缺失、还是 package.json 坏了导致 exports 没生效。
+     * 这里把事实摆出来：文件在不在、package.json 能不能解析、exports 指的文件在不在。
+     */
+    private fun runDiag(rt: File) {
+        try {
+            val sb = StringBuilder("===== diag ${java.text.SimpleDateFormat("MM-dd HH:mm:ss", java.util.Locale.US).format(java.util.Date())} =====\n")
+            val targets = listOf(
+                "node_modules/@sinclair/typebox",
+                "node_modules/@mariozechner/pi-ai"
+            )
+            for (rel in targets) {
+                val d = File(rt, rel)
+                sb.append("--- $rel exists=${d.exists()} ---\n")
+                if (!d.exists()) continue
+                val entries = d.list()?.sorted() ?: emptyList()
+                sb.append("条目: " + entries.take(25).joinToString(", ") + "\n")
+                val pkg = File(d, "package.json")
+                sb.append("package.json exists=${pkg.exists()} size=${if (pkg.exists()) pkg.length() else -1}\n")
+                if (pkg.exists()) {
+                    val txt = pkg.readText()
+                    sb.append("前 120 字符: " + txt.take(120).replace("\n", " ") + "\n")
+                    val hasExports = txt.contains("\"exports\"")
+                    sb.append("含 exports 字段=$hasExports\n")
+                    val idx = txt.indexOf("\"main\"")
+                    if (idx >= 0) sb.append("main: " + txt.substring(idx, minOf(idx + 60, txt.length)).replace("\n", " ") + "\n")
+                }
+            }
+            // typebox 的 exports 指向 build/esm/index.mjs，必须存在
+            for (p in listOf(
+                "node_modules/@sinclair/typebox/build/esm/index.mjs",
+                "node_modules/@sinclair/typebox/build/cjs/index.js",
+                "node_modules/@mariozechner/pi-ai/dist/index.js"
+            )) {
+                val f = File(rt, p)
+                sb.append("$p exists=${f.exists()} size=${if (f.exists()) f.length() else -1}\n")
+            }
+            File(root, "gateway.log").appendText(sb.toString())
+        } catch (t: Throwable) {
+            Boot.trace(ctx, "diag 失败: ${t.message}")
+        }
+    }
+
+    private fun pidOf(p: Process): String = try {        val f = Process::class.java.getDeclaredField("pid")
         f.isAccessible = true
         f.get(p).toString()
     } catch (_: Throwable) { "?" }

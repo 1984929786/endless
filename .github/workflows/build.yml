@@ -159,6 +159,19 @@ jobs:
           test -f "$DEST/dist/index.js" || { echo "✗ 缺 dist/index.js"; exit 1; }
           echo "✓ 网关运行时已就位"
 
+          echo "=== 生成释放清单（App 侧逐条比对，防释放漏文件）==="
+          # 为什么要这个：2026-11-22 现场——APK 里 51351 个文件，App 只释放了 46885 个，
+          # 但释放函数返回了「成功」。少掉的 4466 个里就有 @sinclair/typebox 之类关键包，
+          # 于是 App 启动即报 Cannot find package。
+          # 现在把完整清单烤进 assets，App 释放后逐条 File.exists() 比对，缺一个就重试。
+          ( cd "$DEST" && find . -type f | sed 's|^\./||' | sort ) > app/app/src/main/assets/openclaw/manifest.txt
+          MANI=$(wc -l < app/app/src/main/assets/openclaw/manifest.txt)
+          echo "清单条数：$MANI"
+          test "$MANI" -gt 50000 || { echo "✗ 清单条数异常：$MANI"; exit 1; }
+          # 清单必须含这两个关键包，否则以后出问题查不出来
+          grep -q 'node_modules/@sinclair/typebox/build/esm/index.mjs' app/app/src/main/assets/openclaw/manifest.txt || { echo '✗ 清单缺 typebox'; exit 1; }
+          grep -q 'dist/entry.js' app/app/src/main/assets/openclaw/manifest.txt || { echo '✗ 清单缺 dist/entry.js'; exit 1; }
+
       # ===== 内嵌 node 运行时（B 方案） =====
       # 为什么不用 git 存 libnode.so：44MB 超过 GitHub blobs API 单次上限（~40MB
       # base64 后），实测报 422 "input was too large"。
