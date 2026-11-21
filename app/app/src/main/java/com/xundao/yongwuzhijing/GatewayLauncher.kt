@@ -135,47 +135,65 @@ class GatewayLauncher(private val ctx: Context) {
     }
 
     /**
-     * 建原生库软链。
+     * 确保原生库能被链接器找到。
      *
-     * libnode.so 内部记录的依赖名是 libz.so.1 之类，而 APK 里叫 libz13.so
-     * （Android 要求 so 名唯一，所以打包时加了版本后缀）。
-     * 建同名软链让链接器找得到。
+     * 两种来源，两种命名：
+     *   A. Termux 包（当前用这个）：库名就是标准名 libz.so.1 / libcrypto.so.3，
+     *      直接拷进 jniLibs 即可，**不需要软链**。
+     *   B. 从另一份 APK 提取的：文件名带版本后缀（libz13.so），要建软链。
+     *
+     * 这里做成「缺什么补什么」：先看标准名在不在，在就直接过；
+     * 不在就找带后缀的版本建软链。
      */
     private fun ensureSymlinks(): Boolean {
         val nativeDir = File(ctx.applicationInfo.nativeLibraryDir)
-        val pairs = listOf(
-            "libcrypto.so.3" to "libcrypto3.so",
-            "libssl.so.3" to "libssl3.so",
-            "libz.so.1" to "libz13.so",
-            "libsqlite3.so" to "libsqlite354.so",
-            "libicui18n.so.78" to "libicui18n78.so",
-            "libicuuc.so.78" to "libicuuc78.so",
-            "libicudata.so.78" to "libicudata78.so",
-            "libcares.so" to "libcares.so",
-            "libc++_shared.so" to "libc++_shared.so",
+        if (!nativeDir.isDirectory) {
+            lastError = "nativeLibraryDir 不存在: $nativeDir"
+            return false
+        }
+        val available = nativeDir.list()?.toSet() ?: emptySet()
+
+        // 标准名 → 可能的带后缀来源（按优先级）
+        val needs = mapOf(
+            "libcrypto.so.3" to listOf("libcrypto.so.3", "libcrypto3.so"),
+            "libssl.so.3" to listOf("libssl.so.3", "libssl3.so"),
+            "libz.so.1" to listOf("libz.so.1", "libz13.so", "libz.so"),
+            "libsqlite3.so" to listOf("libsqlite3.so", "libsqlite354.so"),
+            "libicui18n.so.78" to listOf("libicui18n.so.78", "libicui18n78.so"),
+            "libicuuc.so.78" to listOf("libicuuc.so.78", "libicuuc78.so"),
+            "libicudata.so.78" to listOf("libicudata.so.78", "libicudata78.so"),
+            "libcares.so" to listOf("libcares.so"),
+            "libc++_shared.so" to listOf("libc++_shared.so"),
         )
+
         return try {
             libDir.mkdirs()
-            for ((link, target) in pairs) {
-                val src = File(nativeDir, target)
-                if (!src.exists()) {
-                    lastError = "缺原生库: $target"
+            for ((standard, candidates) in needs) {
+                // 已经能用标准名找到，跳过
+                val direct = File(nativeDir, standard)
+                if (direct.exists()) continue
+
+                val src = candidates.asSequence()
+                    .map { File(nativeDir, it) }
+                    .firstOrNull { it.exists() }
+                if (src == null) {
+                    lastError = "缺原生库: $standard（候选 ${candidates.joinToString()} 都不在）"
                     Boot.trace(ctx, lastError)
                     return false
                 }
-                val dst = File(libDir, link)
+                val dst = File(libDir, standard)
                 if (dst.exists()) dst.delete()
-                // Android 上 java.nio.file.Files.createSymbolicLink 可用（API 26+）
                 try {
                     java.nio.file.Files.createSymbolicLink(dst.toPath(), src.toPath())
-                } catch (e: Throwable) {
-                    // 软链失败就硬拷（占空间但能跑）
+                    Boot.trace(ctx, "软链 $standard -> ${src.name}")
+                } catch (_: Throwable) {
                     src.copyTo(dst, overwrite = true)
+                    Boot.trace(ctx, "拷贝 $standard <- ${src.name}")
                 }
             }
             true
         } catch (t: Throwable) {
-            lastError = "建软链失败: ${t.message}"
+            lastError = "准备原生库失败: ${t.message}"
             Boot.trace(ctx, lastError)
             false
         }
