@@ -54,6 +54,37 @@ object AgentClient {
     /** 读上次探活缓存值（不发网络请求）。给 diag 用。 */
     fun lastProbeOk(): Boolean = lastProbeOk
 
+    /**
+     * 裸 Socket 连通性自检（不经过 HttpURLConnection/代理/连接池）。
+     *
+     * 2026-11-21 为什么要这个：App 报 SocketTimeoutException，而同一台机器的
+     * node 进程连 127.0.0.1:18789 秒通。用 HttpURLConnection 分不清是「SYN 无应答」
+     * 还是「连上了但没回数据」。裸 Socket 能测出毫秒级真实结果，而且能分别测
+     * IPv4 / IPv6 / localhost 三种地址，直接看出是哪一层被拦。
+     */
+    fun selfTest(): String {
+        val sb = StringBuilder()
+        for ((name, host) in listOf(
+            "ipv4" to HOST,
+            "ipv6" to "::1",
+            "localhost" to "localhost"
+        )) {
+            val t0 = System.currentTimeMillis()
+            sb.append(name).append('=')
+            try {
+                java.net.Socket().use { s ->
+                    s.connect(java.net.InetSocketAddress(host, PORT), 2000)
+                    sb.append("OK(").append(System.currentTimeMillis() - t0).append("ms)")
+                }
+            } catch (t: Throwable) {
+                sb.append(t.javaClass.simpleName)
+                    .append('(').append(System.currentTimeMillis() - t0).append("ms)")
+            }
+            sb.append(' ')
+        }
+        return sb.toString().trim()
+    }
+
     /** 清空探活缓存，下一句话强制重新探测（诊断用）。 */
     fun resetProbe() {
         lastProbeAt = 0L
