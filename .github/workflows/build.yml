@@ -77,8 +77,12 @@ jobs:
       - name: Put model into assets
         run: |
           set -e
-          DEST=app/app/src/main/assets/models
-          rm -rf "$DEST"
+          # 注意：ModelBridge.findAssetGguf() 先找 assets/models/current/，再找顶层。
+          # **必须放 current 子目录** —— 2026-11-21 现场：放顶层虽然进了 APK，
+          # App 却报「找不到模型文件」，assets.list() 对顶层大文件不可靠。
+          # current 子目录是 3.0.2 验证过的布局。
+          DEST=app/app/src/main/assets/models/current
+          rm -rf app/app/src/main/assets/models
           mkdir -p "$DEST"
           cp /tmp/mdl/model.gguf "$DEST/Qwen3-1.7B-Q4_K_M.gguf"
           ls -lh "$DEST"
@@ -269,6 +273,13 @@ jobs:
           echo "=== gguf ==="; unzip -l "$APK" | grep -i "gguf" || echo "(无 gguf)"
           echo "=== so ==="; unzip -l "$APK" | grep "\.so" | head -20 || echo "(无 so)"
           if unzip -l "$APK" | grep -qi "gguf"; then echo "✓ 模型已打包"; else echo "✗ 缺模型"; exit 1; fi
+          # 布局必须 strict：models/current/*.gguf（findAssetGguf 第一优先级）
+          unzip -l "$APK" | grep -q "assets/models/current/.*\.gguf" || {
+            echo "✗ 模型不在 assets/models/current/ —— App 会报「找不到模型文件」"; exit 1; }
+          # 网关运行时：openclaw.mjs + dist 必须同时在
+          unzip -l "$APK" | grep -q "assets/openclaw/runtime/openclaw.mjs" || { echo "✗ 缺 openclaw.mjs"; exit 1; }
+          unzip -l "$APK" | grep -q "assets/openclaw/runtime/dist/index\.js" || { echo "✗ 缺 dist/index.js"; exit 1; }
+          echo "✓ 网关运行时已打包"
           if unzip -l "$APK" | grep -q "\.so"; then echo "✓ native 库已打包"; else echo "✗ 缺 .so"; exit 1; fi
 
       - name: Upload APK

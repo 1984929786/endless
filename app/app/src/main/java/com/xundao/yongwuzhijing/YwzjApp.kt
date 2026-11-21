@@ -48,10 +48,22 @@ object Boot {
     /** 优先写外部 Download（沙盒和我都能读），失败退回私有目录 */
     private fun targets(ctx: Context): List<File> {
         val list = ArrayList<File>()
-        try {
-            val dl = File("/storage/emulated/0/Download")
-            if (dl.isDirectory) list.add(File(dl, "ywzj-boot.log"))
-        } catch (_: Throwable) {}
+        // 多个候选：Android 10+ 分区存储下路径不止一个，逐个试
+        val cands = listOf(
+            "/storage/emulated/0/Download",
+            "/sdcard/Download",
+            "/storage/self/primary/Download"
+        )
+        for (d in cands) {
+            try {
+                val dir = File(d)
+                if (!dir.isDirectory) continue
+                val f = File(dir, "ywzj-boot.log")
+                // 探一下真能不能写，别只是看目录存在
+                if (!f.exists()) f.createNewFile()
+                if (f.canWrite()) { list.add(f); break }
+            } catch (_: Throwable) {}
+        }
         try { list.add(File(ctx.filesDir, "boot.log")) } catch (_: Throwable) {}
         return list
     }

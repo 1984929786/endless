@@ -98,6 +98,7 @@ class NativeBridge(
         o.put("hasConfig", cfg.exists())
         // 运行时有没有被释放出来
         o.put("extracted", java.io.File(context.filesDir, "openclaw/runtime/openclaw.mjs").exists())
+        o.put("runtimeFiles", countFiles(java.io.File(context.filesDir, "openclaw/runtime")))
         // 网关日志尾部：排障时不用拔手机
         o.put("logTail", tail(java.io.File(context.filesDir, "openclaw/gateway.log"), 40))
         return o.toString()
@@ -135,6 +136,15 @@ class NativeBridge(
     /** Agent 开关当前值 */
     @JavascriptInterface
     fun agentEnabled(): Boolean = AgentClient.enabled
+
+    private fun countFiles(dir: java.io.File): Int {
+        var n = 0
+        try {
+            dir.walkTopDown().forEach { if (it.isFile) n++ }
+        } catch (_: Throwable) {
+        }
+        return n
+    }
 
     private fun tail(f: java.io.File, n: Int): String {
         return try {

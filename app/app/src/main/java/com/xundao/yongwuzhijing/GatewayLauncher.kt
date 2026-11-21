@@ -99,7 +99,10 @@ class GatewayLauncher(private val ctx: Context) {
     fun diag(): String {
         val steps = startSteps.joinToString(" > ")
         val p = proc
+        val rt = File(root, "runtime")
+        val count = try { rt.walkTopDown().count { it.isFile } } catch (_: Throwable) { -1 }
         return "steps=[" + steps + "] pid=" + (if (p != null && p.isAlive) pidOf(p) else "-") +
+                " files=" + count +
                 (if (lastError.isBlank()) "" else " err=" + lastError)
     }
 
@@ -152,7 +155,9 @@ class GatewayLauncher(private val ctx: Context) {
     private fun extractAssets(): Boolean {
         return try {
             val stamp = File(root, STAMP)
-            if (stamp.exists() && File(root, "runtime/openclaw.mjs").exists()) {
+            if (stamp.exists() && File(root, "runtime/openclaw.mjs").exists() &&
+                File(root, "runtime/dist/entry.js").exists()
+            ) {
                 return true
             }
             root.mkdirs()
@@ -163,23 +168,75 @@ class GatewayLauncher(private val ctx: Context) {
                 return false
             }
             var files = 0
-            fun copy(assetPath: String, destDir: File) {
-                val children = am.list(assetPath) ?: return
-                if (children.isEmpty()) {
-                    // 是文件
-                    destDir.parentFile?.mkdirs()
-                    am.open(assetPath).use { ins ->
-                        FileOutputStream(destDir).use { out -> ins.copyTo(out, 65536) }
+            var dirs = 0
+            val startedAt = System.currentTimeMillis()
+
+            /**
+             * 递归拷贝。
+             *
+             * 关键坑（2026-11-21 现场）：`AssetManager.list()` 对空目录 / 深层目录
+             * 可能返回空数组，而我们对「空数组」的理解是「这是文件」。
+             * 原来直接 `am.open(path)` 一旦抛异常，外面 catch 就把整个释放判失败，
+             * 但已经写了一半文件 —— 结果是**半残的 runtime**：
+             * 有 openclaw.mjs，没有 dist，于是网关报「dist/cli 不存在」。
+             *
+             * 现在：① 打不开就当目录再试一次，② 失败不中断整批，记下来继续，
+             * ③ 结束后做完整性断言，缺关键文件就判失败，删 stamp 让它下次重试。
+             */
+            val failed = ArrayList<String>()
+            fun copy(assetPath: String, dest: File) {
+                val children = am.list(assetPath)
+                if (children == null || children.isEmpty()) {
+                    // 可能是文件，也可能是空目录
+                    try {
+                        am.open(assetPath).use { ins ->
+                            dest.parentFile?.mkdirs()
+                            FileOutputStream(dest).use { out -> ins.copyTo(out, 65536) }
+                        }
+                        files++
+                        if (files % 2000 == 0) {
+                            Boot.trace(ctx, "释放中… $files 文件 / ${(System.currentTimeMillis() - startedAt) / 1000}s")
+                        }
+                    } catch (e: java.io.FileNotFoundException) {
+                        // 空目录：建出来即可
+                        dest.mkdirs()
+                        dirs++
+                    } catch (t: Throwable) {
+                        failed.add(assetPath + " :: " + t.javaClass.simpleName)
                     }
-                    files++
                     return
                 }
-                destDir.mkdirs()
-                for (c in children) copy("$assetPath/$c", File(destDir, c))
+                dest.mkdirs()
+                dirs++
+                for (c in children) copy("$assetPath/$c", File(dest, c))
             }
             for (t in top) copy("$ASSET_DIR/$t", File(root, t))
 
-            Boot.trace(ctx, "网关资源释放完成，$files 个文件")
+            val secs = (System.currentTimeMillis() - startedAt) / 1000
+            Boot.trace(ctx, "网关资源释放：$files 文件 / $dirs 目录 / ${secs}s / 失败 ${failed.size}")
+            if (failed.isNotEmpty()) {
+                Boot.trace(ctx, "释放失败样本: " + failed.take(5).joinToString(" | "))
+            }
+
+            // 完整性断言：缺任何一个关键文件，都不算成功
+            val must = listOf(
+                "runtime/openclaw.mjs",
+                "runtime/dist/entry.js",
+                "runtime/dist/cli/daemon-cli.js",
+                "runtime/package.json"
+            )
+            val lack = must.filter { !File(root, it).exists() }
+            if (lack.isNotEmpty()) {
+                lastError = "释放不完整，缺: " + lack.joinToString(", ")
+                Boot.trace(ctx, lastError)
+                // 不写 stamp：下次启动重试
+                return false
+            }
+            if (files < 1000) {
+                lastError = "释放文件数异常偏少（$files），应为数万"
+                Boot.trace(ctx, lastError)
+                return false
+            }
             stamp.writeText(System.currentTimeMillis().toString())
             true
         } catch (t: Throwable) {
@@ -360,7 +417,6 @@ class GatewayLauncher(private val ctx: Context) {
             pb.redirectErrorStream(true)
             val logFile = File(root, "gateway.log")
             pb.redirectOutput(ProcessBuilder.Redirect.appendTo(logFile))
-
             val p = pb.start()
             proc = p
             startSteps.add("spawned")

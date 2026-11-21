@@ -679,6 +679,7 @@
         lines.push('运行时已释放: ' + (o.extracted ? '是' : '否'));
         lines.push('配置文件: ' + (o.hasConfig ? '有' : '无'));
         lines.push('启动轨迹: ' + (o.steps || '-'));
+        lines.push('运行时文件数: ' + (o.runtimeFiles != null ? o.runtimeFiles : '?'));
         lines.push('路径: ' + (o.home || '?'));
         lines.push('上一轮: ' + (o.lastNote || '-'));
         if (o.err) lines.push('错误: ' + o.err);
