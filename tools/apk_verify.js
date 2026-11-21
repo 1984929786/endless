@@ -70,14 +70,11 @@ if (extra.length) {
   for (const x of extra.slice(0, 5)) console.log('   ' + x);
 }
 
-// 回归断言：这两个目录曾被 AGP 的 ignoreAssetsPattern 静默丢弃
-for (const need of [
-  PREFIX + 'node_modules/openai/_vendor/',
-  PREFIX + 'dist/extensions/discord/node_modules/@buape/carbon/node_modules/discord-api-types/_interactions/'
-]) {
-  if (!entries.some(en => en.name.startsWith(need))) {
-    console.log('✗ 被丢弃: ' + need + ' —— ignoreAssetsPattern 未生效');
-    process.exit(1);
-  }
+// 回归断言：openai/_vendor 曾被 AGP 的 ignoreAssetsPattern 静默丢弃。
+// 注意别写死不存在的路径（2026-11-22 我把 discord 一个不存在的子目录当断言点），
+// 断言失败会白白烧掉一轮 15 分钟的构建。这里只验确实存在且曾被丢的那个。
+if (!entries.some(en => en.name.startsWith(PREFIX + 'node_modules/openai/_vendor/'))) {
+  console.log('✗ node_modules/openai/_vendor/ 被丢弃 —— ignoreAssetsPattern 未生效');
+  process.exit(1);
 }
 console.log('✓ 清单 ' + mani.length + ' 条全部在包内，_ 开头的目录也都在');
