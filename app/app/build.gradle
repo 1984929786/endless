@@ -11,8 +11,8 @@ android {
         applicationId "com.xundao.yongwuzhijing"
         minSdk 26
         targetSdk 34
-        versionCode 36
-        versionName "3.1.9"
+        versionCode 37
+        versionName "3.2.0"
 
         ndk {
             abiFilters 'arm64-v8a'
@@ -44,6 +44,15 @@ android {
     }
 
     androidResources {
+        // 【2026-11-22 关键】AGP 默认的 ignoreAssetsPattern 里有 `<dir>_*` 和 `.*`，
+        // 会把 assets 里以 _ 或 . 开头的文件/目录静默丢弃。
+        // 现场后果：openclaw 运行时里 node_modules/openai/_vendor/ 76 个 js、
+        // discord 的 _interactions/ 152 个 js、@anthropic-ai/sdk 等全部没进 APK，
+        // 清单（52023 条）和包内（51350 条）差 673，App 永远校验不过。
+        // 这些是别人的 npm 包，不能改名 —— 只能把忽略规则拿掉，让 aapt 老实全部打包。
+        // 仍然保留真正无用的版本控制/系统垃圾文件过滤。
+        ignoreAssetsPattern '!.svn:!.git:!.ds_store:!*.scc:!CVS:!thumbs.db:!picasa.ini:!*~'
+
         // 模型权重不能被压缩，否则 AAPT 会改坏且解压耗时翻倍
         noCompress 'weights'
         noCompress 'txt'

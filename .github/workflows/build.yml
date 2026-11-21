@@ -164,11 +164,10 @@ jobs:
           # 但释放函数返回了「成功」。少掉的 4466 个里就有 @sinclair/typebox 之类关键包，
           # 于是 App 启动即报 Cannot find package。
           # 现在把完整清单烤进 assets，App 释放后逐条 File.exists() 比对，缺一个就重试。
-          # 为什么排除隐藏文件：Gradle 打包 assets 时默认忽略以 . 开头的路径，
-          # 把 .buildstamp / .package-lock.json / .github/ 写进清单只会让 App
-          # 永远比对失败（清单 52414 条 vs 包里 51350 条，差 1064 全是隐藏文件）。
-          # 这些文件对运行时没有用，所以清单和实际包保持一致：一律排除点开头路径。
-          ( cd "$DEST" && find . -type f -not -path '*/.*' | sed 's|^\./||' | sort ) > app/app/src/main/assets/openclaw/manifest.txt
+          # 清单必须和真实文件一致。注意：不能在这里排除点开头/下划线开头的文件，
+          # 因为 app/build.gradle 已经把 aapt 的 ignoreAssetsPattern 改成了不忽略它们；
+          # 两边必须一致，否则 App 校验时永远差一截。
+          ( cd "$DEST" && find . -type f | sed 's|^\./||' | sort ) > app/app/src/main/assets/openclaw/manifest.txt
           MANI=$(wc -l < app/app/src/main/assets/openclaw/manifest.txt)
           echo "清单条数：$MANI"
           test "$MANI" -gt 50000 || { echo "✗ 清单条数异常：$MANI"; exit 1; }
@@ -317,6 +316,33 @@ jobs:
               echo "✗ 缺 $pat* 类原生库（命名规则变了？同步改 GatewayLauncher.ensureSymlinks）"; exit 1; }
           done
           echo "✓ 必需原生库齐全（名字均已核对）"
+
+          # === 清单与真实文件必须完全一致 ===
+          # 2026-11-22 两次翻车的根因都在这里：
+          #   ① App 释放时静默漏了 4466 个文件（递归 list 不可靠）
+          #   ② AGP 默认 ignoreAssetsPattern 把 _/. 开头的文件静默丢掉，
+          #      清单 52023 条 vs 包内 51350 条 → App 永远校验不过
+          # 现在在 CI 里就把两边对平，不允许带偏差出包。
+          echo "=== 清单 vs 包内文件数比对 ==="
+          unzip -p "$APK" "assets/openclaw/manifest.txt" > /tmp/mani.txt
+          MANI=$(wc -l < /tmp/mani.txt)
+          INPKG=$(unzip -l "$APK" | grep "assets/openclaw/runtime/" | grep -v '/$' | wc -l)
+          echo "清单 $MANI 条 / 包内 runtime 文件 $INPKG 个"
+          if [ "$MANI" != "$INPKG" ]; then
+            echo "✗ 清单与实际打包文件数不一致，差 $((MANI - INPKG))"
+            echo "  最可能是 aapt 又忽略了 _ 或 . 开头的路径（ignoreAssetsPattern）或者拷贝缺文件"
+            exit 1
+          fi
+          # 逐个断言：清单里每一条都真在包里（防「数量对上但内容不对」）
+          unzip -l "$APK" | grep "assets/openclaw/runtime/" | grep -v '/$' \
+            | sed 's|^.*assets/openclaw/runtime/||' | sort > /tmp/inpkg.txt
+          MISS=$(grep -Fxv -f /tmp/inpkg.txt /tmp/mani.txt | head -5)
+          if [ -n "$MISS" ]; then echo "✗ 清单有而包里没有："; echo "$MISS"; exit 1; fi
+          echo "✓ 清单与包内容完全一致（$MANI 条）"
+          # 抽查两个曾被 aapt 丢掉的目录，防止回归
+          unzip -l "$APK" | grep -q "assets/openclaw/runtime/node_modules/openai/_vendor/" || {
+            echo "✗ openai/_vendor 被丢弃 —— ignoreAssetsPattern 未生效"; exit 1; }
+          echo "✓ _ 开头的目录已正常打包"
 
       - name: Upload APK
         if: always()
