@@ -1,0 +1,9 @@
+{
+  "name": "ywzj-openclaw-runtime",
+  "private": true,
+  "version": "1.0.0",
+  "description": "永无止境 App 内嵌的 OpenClaw 网关运行时。CI 用 npm install 拉取 Android 平台依赖。",
+  "dependencies": {
+    "openclaw": "2026.4.2"
+  }
+}
