@@ -328,7 +328,7 @@ jobs:
           # 2026-11-22 血教训：在 run: | 里嵌 python heredoc 之后，GitHub 直接
           # 判定 workflow「没有 workflow_dispatch 触发器」，dispatch 一律 422，
           # 而 YAML 本身看起来又没错 —— 排查代价 = 几轮 15 分钟的构建。
-          node tools/apk_verify.js "$APK"
+          node "$GITHUB_WORKSPACE/tools/apk_verify.js" "$APK"
 
       - name: Upload APK
         if: always()
