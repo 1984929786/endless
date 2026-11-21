@@ -21,8 +21,13 @@ import java.net.URL
  * 恰好是规格书要的三样里最难的两样，等于残缺。而 chat/completions
  * 走 agent 路径，不受这份 HTTP 硬黑名单限制。
  *
- * 安全边界：只连 127.0.0.1，token 只存在本机。网关 token 等同于
- * 整机操作员权限，绝不能外传（见 TOOLS.md）。
+ * 【2026-11-21 B 方案重写】
+ * 网关现在是**内嵌在本 App 里**的（见 GatewayLauncher），不再是另一个包。
+ * 所以：
+ *   · 不需要转发层（旧的 18795 已废弃）
+ *   · 不需要探另一个 App 的回环端口（那个跨进程超时问题根本不存在了）
+ *   · 端口固定 18800，就是本进程拉起的那个网关
+ * 安全边界：仍然只连 127.0.0.1。
  */
 object AgentClient {
 
@@ -30,22 +35,27 @@ object AgentClient {
     private const val HOST = "127.0.0.1"
 
     /**
-     * 候选端口，按顺序试。
+     * 内嵌网关端口。
      *
-     * 18795：本机转发层，指向网关 18789。优先，因为能跟我的主控制通道解耦。
-     * 18789：网关原生端口，作为回退。
+     * 【绝不能写 18790】—— 那是 App 自己 ModelBridge 的端口（本地模型 HTTP 服务）。
+     * 2026-11-21 的坑：曾把转发口设为 18790，Socket connect 秒通、却永远拿不到
+     * /health 200，因为连到的是自己的模型服务，它没有 /health 路由。白费一版。
      *
-     * 【绝不能写 18790】—— 那是 App 自己 ModelBridge 的端口（见 ModelBridge.port）。
-     * 2026-11-21 的坑：改为 18790 后 Socket connect 秒通、却永远拿不到 /health 200，
-     * 因为连到的是自己的本地模型服务，它没有 /health 路由。
+     * 【也不能是 18789】—— 那是「寻道」（com.xundao.openclaw）的主控制通道。
+     * B 方案下两个网关完全隔离，各用各的端口和数据目录。
      */
-    private val PORTS = intArrayOf(18795, 18789)
+    val PORTS = intArrayOf(GatewayLauncher.PORT)
 
     /** 上一次探活成功的端口，-1 表示还没有 */
     @Volatile private var activePort = -1
 
-    /** 网关 token。可在设置里覆盖。 */
-    @Volatile var token: String = "9b0b6afe3092e64424c60ba86d0a59aaef366d5524ded071"
+    /** 网关 token。
+     *
+     * 内嵌网关首次启动会自己生成一个写进 OPENCLAW_CONFIG_PATH，
+     * 所以这个默认值只在「连外部网关」时才用得上。
+     * B 方案下真实 token 应该在启动后从 config 里读出来（见 GatewayLauncher）。
+     */
+    @Volatile var token: String = ""
 
     @Volatile var enabled: Boolean = true
 
@@ -147,6 +157,33 @@ object AgentClient {
         }
         lastProbeOk = ok
         return ok
+    }
+
+    /**
+     * 从内嵌网关的配置文件里读 token。
+     *
+     * 为什么要读：GatewayLauncher 首次启动时，若配置里没有 gateway.auth.token，
+     * 网关会自己生成一个并写回配置。所以硬编码 token 对内嵌网关是无效的，
+     * 必须启动后从文件里读。
+     *
+     * @return 读到返回 true 并设置 token
+     */
+    fun loadToken(configFile: java.io.File): Boolean {
+        return try {
+            if (!configFile.exists()) return false
+            val json = JSONObject(configFile.readText())
+            val t = json.optJSONObject("gateway")
+                ?.optJSONObject("auth")
+                ?.optString("token", "")
+                ?: ""
+            if (t.isNotEmpty()) {
+                token = t
+                true
+            } else false
+        } catch (e: Throwable) {
+            Log.i(TAG, "读 token 失败: ${e.message}")
+            false
+        }
     }
 
     /**
