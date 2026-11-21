@@ -157,7 +157,14 @@ jobs:
           ls "$DEST" | head -12
           echo "=== 确认关键 JS ==="
           test -f "$DEST/dist/index.js" || { echo "✗ 缺 dist/index.js"; exit 1; }
-          echo "✓ 网关运行时已就位"
+          # 清掉 npm 包里的点开头文件（.gitattributes/.gitignore/.npmignore/.package-lock.json 等）。
+          # 2026-11-22 现场：清单 52414 条 / 包内 52417 个，唯独
+          # node_modules/fast-uri/.gitattributes 没进包 —— aapt 对点开头的
+          # 文件有额外过滤，改 ignoreAssetsPattern 也拦不住。
+          # 这些都只是 npm 包自带的配置/锁文件，运行时一个都不读。
+          # 与其和打包器抳，不如在生成清单前就删干净，两边自然一致。
+          find "$DEST/node_modules" -type f -name '.*' -delete
+          echo "已清理 node_modules 下的点开头文件"
 
           echo "=== 生成释放清单（App 侧逐条比对，防释放漏文件）==="
           # 为什么要这个：2026-11-22 现场——APK 里 51351 个文件，App 只释放了 46885 个，
