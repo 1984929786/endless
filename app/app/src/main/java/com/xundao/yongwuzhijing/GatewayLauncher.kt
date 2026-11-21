@@ -44,6 +44,13 @@ class GatewayLauncher(private val ctx: Context) {
             false
         }
 
+        /** 实例版的「进程活没活」（单例后界面就该用这个） */
+        fun isProcAlive(): Boolean = try {
+            proc?.isAlive == true
+        } catch (t: Throwable) {
+            false
+        }
+
         /**
          * 内嵌网关端口。**不能是 18789（寻道在用）也不能是 18790（本地模型）。**
          */
@@ -64,6 +71,21 @@ class GatewayLauncher(private val ctx: Context) {
 
         /** 标记文件：释放完成后写一个，下次跳过 */
         private const val STAMP = ".extracted-v1"
+
+        /**
+         * 跨页面单例。
+         *
+         * 为什么必须单例：2026-11-21 19:13 现场——MainActivity 在后台线程
+         * `gw.start()` 跑完（释放 + 拉进程），而界面上的「网关」页读的是
+         * 另一个 GatewayLauncher 实例的 proc → 永远显示「进程 停」。
+         * 进程只能拉一份，这份状态就必须只有一份。
+         */
+        @Volatile private var INSTANCE: GatewayLauncher? = null
+
+        fun get(ctx: Context): GatewayLauncher =
+            INSTANCE ?: synchronized(this) {
+                INSTANCE ?: GatewayLauncher(ctx.applicationContext).also { INSTANCE = it }
+            }
     }
 
     private val root: File get() = File(ctx.filesDir, ASSET_DIR)
@@ -77,6 +99,17 @@ class GatewayLauncher(private val ctx: Context) {
 
     fun lastError(): String = lastError
 
+    /** 给界面看的：启动是否真发起过、跑到哪一步、进程 pid */
+    fun diag(): String {
+        val steps = startSteps.joinToString(" > ")
+        val p = proc
+        return "steps=[" + steps + "] pid=" + (if (p != null && p.isAlive) pidOf(p) else "-") +
+                (if (lastError.isBlank()) "" else " err=" + lastError)
+    }
+
+    /** 启动过程每一步都记下来，界面直接显示，不用拔手机看日志 */
+    @Volatile private var startSteps: MutableList<String> = java.util.Collections.synchronizedList(ArrayList())
+
     /** 网关是否在跑（进程活着 + 端口能连） */
     fun isRunning(): Boolean {
         val p = proc ?: return false
@@ -89,10 +122,14 @@ class GatewayLauncher(private val ctx: Context) {
      * 同步执行，调用方应该在后台线程调（首次要释放 400MB assets，可能几十秒）。
      */
     fun start(): Boolean {
-        if (isRunning()) return true
+        startSteps.clear()
+        if (isRunning()) { startSteps.add("已运行"); return true }
         if (!extractAssets()) return false
+        startSteps.add("assets ok")
         if (!ensureSymlinks()) return false
+        startSteps.add("libs ok")
         if (!writeDefaultConfig()) return false
+        startSteps.add("config ok")
         return spawn()
     }
 
@@ -322,19 +359,28 @@ class GatewayLauncher(private val ctx: Context) {
             env["OPENCLAW_ALLOW_MULTI_GATEWAY"] = "1"
             env["HOME"] = home.absolutePath
             env["TMPDIR"] = ctx.cacheDir.absolutePath
+            // 不设 PATH 时部分子进程查找命令会失败；给一个最小 PATH
+            if (env["PATH"] == null) env["PATH"] = "/system/bin:/system/xbin"
             pb.redirectErrorStream(true)
-            pb.redirectOutput(File(root, "gateway.log"))
+            val logFile = File(root, "gateway.log")
+            pb.redirectOutput(ProcessBuilder.Redirect.appendTo(logFile))
 
             val p = pb.start()
             proc = p
             lastProc = p
-            Boot.trace(ctx, "网关进程已启动 pid=${pidOf(p)}")
+            startSteps.add("spawned")
+            Boot.trace(ctx, "网关进程已启动 pid=" + pidOf(p))
 
             // 等最多 40 秒看端口是否起来
             val ok = waitPort(40_000)
             if (!ok) {
-                lastError = "网关启动后 40 秒端口仍不通，见 ${File(root, "gateway.log").absolutePath}"
+                lastError = "网关启动后 40 秒端口仍不通"
+                // 关键：进程可能启动即死（如 node 报错退出），把这个信号告诉界面
+                val died = try { !p.isAlive } catch (_: Throwable) { false }
+                startSteps.add(if (died) "进程已退出" else "端口超时")
                 Boot.trace(ctx, lastError)
+            } else {
+                startSteps.add("port ok")
             }
             ok
         } catch (t: Throwable) {

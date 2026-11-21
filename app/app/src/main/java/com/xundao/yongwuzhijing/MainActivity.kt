@@ -35,7 +35,7 @@ class MainActivity : AppCompatActivity() {
             Boot.trace(applicationContext, "创建 NativeBridge")
             native = NativeBridge(applicationContext, bridge)
             Boot.trace(applicationContext, "创建 GatewayLauncher")
-            gw = GatewayLauncher(applicationContext)
+            gw = GatewayLauncher.get(applicationContext)
 
             // 网关在后台线程启动：首次要释放 400MB assets，不能堵主线程
             Thread({
@@ -45,12 +45,12 @@ class MainActivity : AppCompatActivity() {
                     val ms = System.currentTimeMillis() - t0
                     Boot.trace(applicationContext, "内嵌网关启动结果=$ok 耗时=${ms}ms")
                     if (ok) {
-                        // 网关首次启动会自己生成 token 写进配置，必须读回来
+                        // 配置里的 token 是 App 写进去的固定值，读回来只为确认一致
                         val cfg = java.io.File(applicationContext.filesDir, "openclaw/home/openclaw.json")
                         val gotToken = AgentClient.loadToken(cfg)
-                        Boot.trace(applicationContext, "读取网关 token: $gotToken")
+                        Boot.trace(applicationContext, "网关 token 就绪: " + gotToken.take(8) + "…")
                     } else {
-                        Boot.trace(applicationContext, "网关启动失败: ${gw.lastError()}")
+                        Boot.trace(applicationContext, "网关启动失败: " + gw.lastError() + " | " + gw.diag())
                     }
                 } catch (t: Throwable) {
                     Boot.trace(applicationContext, "网关启动异常: ${t.javaClass.simpleName}: ${t.message}")

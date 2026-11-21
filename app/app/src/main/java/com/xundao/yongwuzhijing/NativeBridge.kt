@@ -81,21 +81,45 @@ class NativeBridge(
     @JavascriptInterface
     fun gwInfo(): String {
         val o = JSONObject()
+        val gw = GatewayLauncher.get(context)
         o.put("port", GatewayLauncher.PORT)
-        o.put("proc", try { GatewayLauncher.runningProcAlive() } catch (t: Throwable) { false })
+        o.put("proc", gw.isProcAlive())
         o.put("probe", AgentClient.probe())
         o.put("health", AgentClient.healthLine())
         o.put("tokenHint", if (AgentClient.token.isEmpty()) "(空)" else AgentClient.token.take(8) + "…" + AgentClient.token.length + "位")
         o.put("home", java.io.File(context.filesDir, "openclaw/home").absolutePath)
         o.put("lastNote", AgentClient.lastChatNote)
         o.put("err", AgentClient.lastProbeError)
+        o.put("steps", gw.diag())
         // 端点开没开：直接看配置文件，不猜
         val cfg = java.io.File(context.filesDir, "openclaw/home/openclaw.json")
         val txt = try { if (cfg.exists()) cfg.readText() else "" } catch (e: Throwable) { "" }
         o.put("chatEndpoint", txt.contains("chatCompletions"))
+        o.put("hasConfig", cfg.exists())
+        // 运行时有没有被释放出来
+        o.put("extracted", java.io.File(context.filesDir, "openclaw/runtime/openclaw.mjs").exists())
         // 网关日志尾部：排障时不用拔手机
         o.put("logTail", tail(java.io.File(context.filesDir, "openclaw/gateway.log"), 40))
         return o.toString()
+    }
+
+    /** 手动拉起网关（等释放+启动完才返回結果，可能要几十秒） */
+    @JavascriptInterface
+    fun gwStart(): String {
+        val t0 = System.currentTimeMillis()
+        return try {
+            val gw = GatewayLauncher.get(context)
+            val ok = gw.start()
+            val ms = System.currentTimeMillis() - t0
+            if (ok) {
+                AgentClient.loadToken(java.io.File(context.filesDir, "openclaw/home/openclaw.json"))
+                "已启动 ${ms}ms | " + gw.diag()
+            } else {
+                "启动失败 ${ms}ms | " + gw.diag()
+            }
+        } catch (t: Throwable) {
+            "异常: ${t.javaClass.simpleName}: ${t.message}"
+        }
     }
 
     /** 真的发一句话给网关。返回可读结果，界面直接显示。 */

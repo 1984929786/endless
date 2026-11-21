@@ -636,6 +636,21 @@
     });
     subContent.appendChild(toggleCard);
 
+    // 启动/重启网关
+    var startCard = card('启动网关', '没跑起来就点这里。首次要释放运行时，可能几十秒', '', {
+      btn: '启动',
+      onTap: function () {
+        startCard.querySelector('.card-desc').textContent = '正在启动，请稍等…';
+        call('gwStart').then(function (r) {
+          startCard.querySelector('.card-desc').textContent = String(r || '').slice(0, 200);
+          refresh();
+        }).catch(function (e) {
+          startCard.querySelector('.card-desc').textContent = '异常: ' + e.message;
+        });
+      }
+    });
+    subContent.appendChild(startCard);
+
     var refreshCard = card('刷新状态', '', '', {
       btn: '刷新',
       onTap: refresh
@@ -652,11 +667,18 @@
         var health = String(o.health || '?');
         var head = alive ? (probe ? '运行中' : '进程在，端口不通') : '未运行';
         descEl.textContent = head + '  ·  ' + health + '  ·  端口 ' + (o.port || '?');
+        // 一直没跑起来就把启动轨迹摆到卡片上，不用展开明细
+        if (!alive && !probe) {
+          descEl.textContent = head + '  ·  ' + (o.steps || '未尝试启动');
+        }
         var lines = [];
         lines.push('进程: ' + (alive ? '活' : '停'));
         lines.push('端口: ' + (o.port || '?') + ' → ' + health);
         lines.push('端点: /v1/chat/completions ' + (o.chatEndpoint ? '已开' : '未开'));
         lines.push('token: ' + (o.tokenHint || '(空)'));
+        lines.push('运行时已释放: ' + (o.extracted ? '是' : '否'));
+        lines.push('配置文件: ' + (o.hasConfig ? '有' : '无'));
+        lines.push('启动轨迹: ' + (o.steps || '-'));
         lines.push('路径: ' + (o.home || '?'));
         lines.push('上一轮: ' + (o.lastNote || '-'));
         if (o.err) lines.push('错误: ' + o.err);
