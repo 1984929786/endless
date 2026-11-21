@@ -49,6 +49,10 @@ class NativeBridge(
     fun status(): String {
         // Agent 可用时，不需要本地模型也能聊天（工具全有）
         if (AgentClient.enabled && AgentClient.probe()) return "agent"
+        // probe 失败时把原写进 stage 日志：不聊天也能看出网关连通性
+        if (AgentClient.enabled && AgentClient.lastProbeError.isNotBlank()) {
+            CrashCatcher.stage("启动探活失败: " + AgentClient.lastProbeError)
+        }
         if (bridge.modelReady) return "ready"
         val err = lastLoadError
         if (err != null) return "fail:$err"
@@ -74,14 +78,21 @@ class NativeBridge(
         return if (on) "on" else "off"
     }
 
-    /** 诊断摘要：上次完整调用卡在哪一环。装机不用翻日志。 */
+    /** 诊断摘要：上次完整调用卡在哪一环。装机不用翻日志。
+     *  注意：这里**不再调 probe()**，只用缓存值。
+     *  diag 是从 JS 异步拿的，再探一次会把结果拖后 3 秒甚至卡死。 */
     @JavascriptInterface
-    fun diag(): String {
+    fun diag(): String = "src=" + lastSource + " " + diagDetail()
+
+    /** 上一轮回答的链路：gateway / local / none。最硬的事实，不靠措辞猜。 */
+    @Volatile private var lastSource: String = "none"
+
+    private fun diagDetail(): String {
         val sb = StringBuilder()
         sb.append("enabled=").append(AgentClient.enabled)
-        sb.append(" probe=").append(if (AgentClient.probe()) "OK" else "FAIL")
+        sb.append(" probe=").append(if (AgentClient.lastProbeOk()) "OK" else "FAIL")
         if (AgentClient.lastProbeError.isNotBlank()) {
-            sb.append(" probeErr=").append(AgentClient.lastProbeError)
+            sb.append(" err=").append(AgentClient.lastProbeError)
         }
         sb.append(" last=").append(AgentClient.lastChatNote.ifBlank { "(未调用过)" })
         sb.append(" model=").append(if (bridge.modelReady) "ready" else "not-ready")
@@ -229,11 +240,15 @@ class NativeBridge(
             AgentClient.resetProbe()
             val r = AgentClient.chat(messages)
             if (r.ok) {
+                lastSource = "gateway"
                 CrashCatcher.stage("Agent 回复成功: ${AgentClient.lastChatNote}")
                 return r.text
             }
+            lastSource = "local"
             Log.i(TAG, "Agent 不可用，回退本地模型: ${r.error}")
             CrashCatcher.stage("Agent 回退: ${r.error} | ${AgentClient.lastChatNote}")
+        } else {
+            lastSource = "local"
         }
 
         // ② 回退：本地模型（断网/网关没起时仍然能对话）
