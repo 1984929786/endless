@@ -129,6 +129,61 @@ jobs:
           test -f "$DEST/openclaw.mjs" || { echo "✗ 缺 openclaw.mjs"; exit 1; }
           echo "✓ 网关运行时已就位"
 
+      # ===== 内嵌 node 运行时（B 方案） =====
+      # 为什么不用 git 存 libnode.so：44MB 超过 GitHub blobs API 单次上限（~40MB
+      # base64 后），实测报 422 "input was too large"。
+      # 改为从 Termux 官方源下载 aarch64 包，版本可控、仓库干净。
+      # 选 nodejs-lts 24.22.x：与开发机当前运行的 v24.22.1 基本一致。
+      - name: Fetch Termux node runtime
+        run: |
+          set -e
+          mkdir -p /tmp/tx && cd /tmp/tx
+          BASE=https://packages.termux.dev/apt/termux-main/pool/main
+          # 精确版本（查过 Packages 索引）：
+          URIS="
+          $BASE/n/nodejs-lts/nodejs-lts_24.22.3_aarch64.deb
+          $BASE/libi/libicu/libicu_79.1_aarch64.deb
+          $BASE/o/openssl/openssl_1%3a3.6.5_aarch64.deb
+          $BASE/c/c-ares/c-ares_1.34.9_aarch64.deb
+          $BASE/libs/libsqlite/libsqlite_3.54.1-1_aarch64.deb
+          $BASE/libc/libc++/libc++_30_aarch64.deb
+          $BASE/z/zlib/zlib_1.4_aarch64.deb
+          "
+          for u in $URIS; do
+            echo "↓ $u"
+            curl -fL --retry 3 --retry-delay 3 -O "$u"
+          done
+          ls -lh *.deb
+          echo "=== 解包 ==="
+          mkdir -p ex
+          for d in *.deb; do dpkg-deb -x "$d" ex; done
+          echo "=== 找 node ==="
+          find ex -name "node" -type f -exec ls -lh {} \;
+          NODE=$(find ex -name "node" -type f | head -1)
+          test -n "$NODE" || { echo "✗ 未找到 node 可执行"; exit 1; }
+          echo "NODE=$NODE"
+          "$NODE" -v 2>&1 | head -2 || echo "（直接跑不了，正常：需要在 Android 上跑）"
+
+      - name: Install Termux node into jniLibs
+        run: |
+          set -e
+          NODE=$(find /tmp/tx/ex -name "node" -type f | head -1)
+          DEST=app/app/src/main/jniLibs/arm64-v8a
+          mkdir -p "$DEST"
+          # node 改名 libnode.so：Android 只允许执行 lib/ 目录下以 lib*.so 命名的文件
+          cp "$NODE" "$DEST/libnode.so"
+          echo "=== 配套库（补齐已有 .so 的版本差异）==="
+          find /tmp/tx/ex -name "*.so*" -type f | while read -r f; do
+            b=$(basename "$f")
+            # 只拷 jniLibs 里没有的，已有的以仓库为准
+            if [ ! -f "$DEST/$b" ]; then
+              cp "$f" "$DEST/$b" && echo "  + $b"
+            fi
+          done
+          echo "=== jniLibs 最终清单 ==="
+          ls -lh "$DEST" | awk '{print $5, $9}'
+          test -f "$DEST/libnode.so" || { echo "✗ libnode.so 缺失"; exit 1; }
+
       - name: Build debug APK
         working-directory: app
         run: |
