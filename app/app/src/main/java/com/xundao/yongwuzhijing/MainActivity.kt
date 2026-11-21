@@ -16,6 +16,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var web: WebView
     private lateinit var bridge: ModelBridge
     private lateinit var native: NativeBridge
+    private lateinit var gw: GatewayLauncher
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -33,6 +34,28 @@ class MainActivity : AppCompatActivity() {
             bridge = ModelBridge(applicationContext)
             Boot.trace(applicationContext, "创建 NativeBridge")
             native = NativeBridge(applicationContext, bridge)
+            Boot.trace(applicationContext, "创建 GatewayLauncher")
+            gw = GatewayLauncher(applicationContext)
+
+            // 网关在后台线程启动：首次要释放 400MB assets，不能堵主线程
+            Thread({
+                try {
+                    val t0 = System.currentTimeMillis()
+                    val ok = gw.start()
+                    val ms = System.currentTimeMillis() - t0
+                    Boot.trace(applicationContext, "内嵌网关启动结果=$ok 耗时=${ms}ms")
+                    if (ok) {
+                        // 网关首次启动会自己生成 token 写进配置，必须读回来
+                        val cfg = java.io.File(applicationContext.filesDir, "openclaw/home/openclaw.json")
+                        val gotToken = AgentClient.loadToken(cfg)
+                        Boot.trace(applicationContext, "读取网关 token: $gotToken")
+                    } else {
+                        Boot.trace(applicationContext, "网关启动失败: ${gw.lastError()}")
+                    }
+                } catch (t: Throwable) {
+                    Boot.trace(applicationContext, "网关启动异常: ${t.javaClass.simpleName}: ${t.message}")
+                }
+            }, "gateway-boot").start()
 
             Boot.trace(applicationContext, "创建 WebView")
             web = WebView(this)
