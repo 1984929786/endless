@@ -305,7 +305,8 @@ object AgentClient {
     }
 
     private fun open(path: String, method: String): HttpURLConnection {
-        val port = if (activePort > 0) activePort else PORTS[0]        val c = URL("http://$HOST:$port$path").openConnection() as HttpURLConnection
+        val port = if (activePort > 0) activePort else PORTS[0]
+        val c = URL("http://$HOST:$port$path").openConnection() as HttpURLConnection
         c.requestMethod = method
         c.connectTimeout = 8000          // 冷启动/模型加载中 CPU 吃满时，3 秒不够
         c.readTimeout = 180_000          // agent 可能跑工具，给足时间
