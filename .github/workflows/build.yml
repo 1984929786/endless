@@ -93,40 +93,66 @@ jobs:
         working-directory: openclaw-runtime
         run: |
           set -e
-          echo "=== 安装 openclaw 运行时（目标平台 linux-arm64，Android 可直接用 Bionic 兼容）==="
-          npm install --no-audit --no-fund --os=linux --cpu=arm64 2>&1 | tail -20
+          echo "=== 安装 openclaw 运行时（cd 目标 linux-arm64）==="
+          npm install --no-audit --no-fund --os=linux --cpu=arm64
           echo "=== 安装结果 ==="
           du -sh node_modules
           echo "=== 确认关键文件 ==="
-          test -f node_modules/openclaw/openclaw.mjs || { echo "✗ 缺 openclaw.mjs"; exit 1; }
-          test -d node_modules/openclaw/dist || { echo "✗ 缺 dist"; exit 1; }
+          test -f node_modules/openclaw/openclaw.mjs
+          test -d node_modules/openclaw/dist
           echo "✓ openclaw.mjs + dist 就位"
-          echo "=== 清理无用平台包（只留 linux-arm64）==="
-          find node_modules -maxdepth 3 -type d \( \
-            -name "*-win32-*" -o -name "*-darwin-*" -o -name "*-linux-x64*" \
-            -o -name "*-linux-arm\" -o -name "*-linux-ia32*" -o -name "*-musl-*" \
-            -o -name "*windows*" -o -name "*-ios-*" -o -name "*-freebsd-*" \
-            \) -prune -exec rm -rf {} + 2>/dev/null || true
-          du -sh node_modules
+          echo "=== 平台包分布（供确认）==="
+          find node_modules -maxdepth 4 -type d -name '*win32*' | head -20
+          echo "--- darwin ---"
+          find node_modules -maxdepth 4 -type d -name '*darwin*' | head -20
+          echo "--- linux-x64 ---"
+          find node_modules -maxdepth 4 -type d -name '*linux-x64*' | head -20
 
       - name: Repack runtime into App assets
         run: |
           set -e
-          SRC=openclaw-runtime/node_modules/openclaw
+          SRC=openclaw-runtime/node_modules
           DEST=app/app/src/main/assets/openclaw/runtime
           rm -rf "$DEST"
           mkdir -p "$DEST"
-          # openclaw 包本体（dist + assets + skills + 入口）
-          cp -r "$SRC"/* "$DEST"/
-          # 依赖放到 runtime/node_modules，node 解析模块时会向上找
+
+          echo "=== 拷贝 openclaw 包本体 ==="
+          cp -r "$SRC"/openclaw/* "$DEST"/
+          test -f "$DEST/openclaw.mjs" || { echo "✗ 缺 openclaw.mjs"; exit 1; }
+
+          echo "=== 拷贝依赖（白名单全拷，不删不碰）==="
           mkdir -p "$DEST/node_modules"
-          cp -r openclaw-runtime/node_modules/* "$DEST/node_modules"/ 2>/dev/null || true
-          # 去掉包本体自己那份，已经在上面拷过
-          rm -rf "$DEST/node_modules/openclaw" 2>/dev/null || true
+          for d in "$SRC"/*; do
+            b=$(basename "$d")
+            [ "$b" = "openclaw" ] && continue
+            cp -r "$d" "$DEST/node_modules/"
+          done
+
+          echo "=== 剔除其他平台二进制（逐个判断，不用模糊通配符）==="
+          # 原则：只删目录名里明确带其他平台标识的，且只看相对路径的后三级。
+          # 不写 find | rm 大类模式 —— 上次就是那样把脚本引号搞坏导致整步失败。
+          REMOVED=0
+          for p in $(cd "$DEST/node_modules" && find . -maxdepth 3 -type d -print); do
+            rel=${p#./}
+            last=$(basename "$rel")
+            if [ "$last" = "win32-x64" ] || [ "$last" = "win32-arm64" ] \
+               || [ "$last" = "win32-ia32" ] || [ "$last" = "darwin-x64" ] \
+               || [ "$last" = "darwin-arm64" ] || [ "$last" = "linux-x64" ] \
+               || [ "$last" = "linux-ia32" ] || [ "$last" = "linux-ppc64" ] \
+               || [ "$last" = "linux-s390x" ] || [ "$last" = "linux-riscv64" ] \
+               || [ "$last" = "linux-musl-arm64" ] || [ "$last" = "linux-musl-x64" ]; then
+              rm -rf "$DEST/node_modules/$rel"
+              REMOVED=$((REMOVED+1))
+            fi
+          done
+          echo "剔除 $REMOVED 个其他平台目录"
+
           echo "=== assets 体积 ==="
           du -sh "$DEST"
-          ls "$DEST" | head -10
-          test -f "$DEST/openclaw.mjs" || { echo "✗ 缺 openclaw.mjs"; exit 1; }
+          echo "=== 顶层内容 ==="
+          ls "$DEST" | head -12
+          echo "=== 确认关键 JS ==="
+          test -f "$DEST/dist/index.js" || { echo "✗ 缺 dist/index.js"; exit 1; }
           echo "✓ 网关运行时已就位"
 
       # ===== 内嵌 node 运行时（B 方案） =====
