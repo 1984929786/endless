@@ -28,7 +28,18 @@ object AgentClient {
 
     private const val TAG = "AgentClient"
     private const val HOST = "127.0.0.1"
-    private const val PORT = 18789
+
+    /**
+     * 候选端口，按顺序试。
+     *
+     * 为什么多个：18990 上可能已经有人占着（比如网关自己、或其他代理），
+     * 而且不同部署环境下可用端口不同。用 18789 既是网关原生端口，也是
+     * 反向代理/转发的常用落点。第一个能完成 TCP 握手且 /health 返 200 的就锁定。
+     */
+    private val PORTS = intArrayOf(18789, 18790)
+
+    /** 上一次探活成功的端口，-1 表示还没有 */
+    @Volatile private var activePort = -1
 
     /** 网关 token。可在设置里覆盖。 */
     @Volatile var token: String = "9b0b6afe3092e64424c60ba86d0a59aaef366d5524ded071"
@@ -69,19 +80,22 @@ object AgentClient {
             "ipv6" to "::1",
             "localhost" to "localhost"
         )) {
-            val t0 = System.currentTimeMillis()
-            sb.append(name).append('=')
-            try {
-                java.net.Socket().use { s ->
-                    s.connect(java.net.InetSocketAddress(host, PORT), 2000)
-                    sb.append("OK(").append(System.currentTimeMillis() - t0).append("ms)")
+            for (p in PORTS) {
+                val t0 = System.currentTimeMillis()
+                sb.append(name).append(':').append(p).append('=')
+                try {
+                    java.net.Socket().use { s ->
+                        s.connect(java.net.InetSocketAddress(host, p), 2000)
+                        sb.append("OK(").append(System.currentTimeMillis() - t0).append("ms)")
+                    }
+                } catch (t: Throwable) {
+                    sb.append(t.javaClass.simpleName)
+                        .append('(').append(System.currentTimeMillis() - t0).append("ms)")
                 }
-            } catch (t: Throwable) {
-                sb.append(t.javaClass.simpleName)
-                    .append('(').append(System.currentTimeMillis() - t0).append("ms)")
+                sb.append(' ')
             }
-            sb.append(' ')
         }
+        if (activePort > 0) sb.append("active=").append(activePort)
         return sb.toString().trim()
     }
 
@@ -91,6 +105,7 @@ object AgentClient {
         lastProbeOk = false
         lastProbeError = ""
         lastChatNote = ""
+        activePort = -1
     }
 
     /** 快速探活：网关在不在。3 秒超时，失败不打日志噪音。 */
@@ -100,16 +115,14 @@ object AgentClient {
         lastProbeAt = now
         lastProbeError = ""
         val ok = try {
-            val c = open("/health", "GET")
-            c.connectTimeout = 3000
-            c.readTimeout = 3000
-            val code = c.responseCode
-            c.disconnect()
-            if (code != 200) lastProbeError = "/health 返回 $code"
-            code == 200
+            val p = findPort()
+            if (p < 0) {
+                lastProbeError = "所有候选端口都不通 " + PORTS.joinToString(",")
+                false
+            } else true
         } catch (t: Throwable) {
             lastProbeError = (t.javaClass.simpleName + ": " + (t.message ?: "")) +
-                    " (host=$HOST port=$PORT)"
+                    " (host=$HOST port=" + PORTS.joinToString(",") + ")"
             Log.i(TAG, "网关不可达: $lastProbeError")
             false
         }
@@ -190,12 +203,35 @@ object AgentClient {
     }
 
     private fun open(path: String, method: String): HttpURLConnection {
-        val c = URL("http://$HOST:$PORT$path").openConnection() as HttpURLConnection
+        val port = if (activePort > 0) activePort else PORTS[0]
+        val c = URL("http://$HOST:$port$path").openConnection() as HttpURLConnection
         c.requestMethod = method
-        c.connectTimeout = 5000
-        c.readTimeout = 180_000       // agent 可能跑工具，给足时间
+        c.connectTimeout = 8000          // 冷启动/模型加载中 CPU 吃满时，3 秒不够
+        c.readTimeout = 180_000          // agent 可能跑工具，给足时间
         c.setRequestProperty("Authorization", "Bearer $token")
         return c
+    }
+
+    /** 在候选端口里找第一个 /health 返 200 的，结果缓存到 activePort。 */
+    private fun findPort(): Int {
+        for (p in PORTS) {
+            try {
+                val c = URL("http://$HOST:$p/health").openConnection() as HttpURLConnection
+                c.requestMethod = "GET"
+                c.connectTimeout = 4000
+                c.readTimeout = 4000
+                c.setRequestProperty("Authorization", "Bearer $token")
+                val code = c.responseCode
+                c.disconnect()
+                if (code == 200) {
+                    activePort = p
+                    return p
+                }
+            } catch (_: Throwable) {
+                // 换下一个端口
+            }
+        }
+        return -1
     }
 
     private fun readAll(s: java.io.InputStream?): String {
