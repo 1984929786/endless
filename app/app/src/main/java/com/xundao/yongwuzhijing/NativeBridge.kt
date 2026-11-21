@@ -84,6 +84,10 @@ class NativeBridge(
     @JavascriptInterface
     fun diag(): String = "src=" + lastSource + " " + diagDetail()
 
+    /** 裸 Socket 自检：分别测 ipv4/ipv6/localhost，看是哪一层被拦。 */
+    @JavascriptInterface
+    fun netTest(): String = AgentClient.selfTest()
+
     /** 上一轮回答的链路：gateway / local / none。最硬的事实，不靠措辞猜。 */
     @Volatile private var lastSource: String = "none"
 
@@ -96,6 +100,9 @@ class NativeBridge(
         }
         sb.append(" last=").append(AgentClient.lastChatNote.ifBlank { "(未调用过)" })
         sb.append(" model=").append(if (bridge.modelReady) "ready" else "not-ready")
+        // 网关不通时直接带上裸 Socket 自检，省得来回几轮。
+        // 只在 probe 失败时测，成功时不做无用的网络动作。
+        if (!AgentClient.lastProbeOk()) sb.append(" net=").append(AgentClient.selfTest())
         return sb.toString()
     }
 
