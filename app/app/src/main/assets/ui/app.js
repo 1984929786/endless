@@ -334,10 +334,7 @@
             ? ('生成失败：' + errMsg)
             : '这次没生成出正文。再发一次试试。';
           bubble.parentElement.classList.add('msg-error');
-          // 失败时把诊断摘要也打出来 —— 装机排障不用再找日志文件
-          call('diag').then(function (d) {
-            bubble.textContent += '\n[诊断] ' + String(d);
-          }).catch(function () {});
+          appendDiag();
         } else {
           bubble.textContent = answer;
           state.messages.push({ role: 'assistant', content: answer });
@@ -345,6 +342,16 @@
           // 每轮结束后重测模式：网关可能直上直下
           call('mode').then(function (m) {
             state.agentReady = (String(m) === 'agent');
+          }).catch(function () {});
+          // 即使成功也要看走了哪条链路 —— 否则「本地模型的套话」会被当成成功
+          appendDiag();
+        }
+
+        function appendDiag() {
+          call('diag').then(function (d) {
+            var s = String(d || '');
+            // 默认显示：排查期间需要一眼看出走的是网关还是本地模型
+            if (window.__diagOn !== false) bubble.textContent += '\n\n[诊断] ' + s;
           }).catch(function () {});
         }
 
