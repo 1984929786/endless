@@ -3,7 +3,17 @@ name: Build Endless APK
 on:
   push:
     branches: [ main ]
+    paths-ignore:
+      - '**/*.md'
+      - 'memory/**'
+      - 'trigger-build/**'
   workflow_dispatch:
+
+# 注意（2026-11-21 教训）：
+# 推送工具 gh_push2.js 是「一个文件一次 commit」，每个 commit 都会触发一次构建。
+# 51 个文件 = 51 个 queued run，队列被自己的提交堵死，真正要的那个排在最后。
+# 所以：用 gh_push_bulk.js 一次性提交，或者推完手动 dispatch 指定 commit。
+# 这里保留 push 触发是给正常 git push 用的（单次 commit）。
 
 jobs:
   build:
