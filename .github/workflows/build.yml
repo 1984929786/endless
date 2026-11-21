@@ -164,7 +164,11 @@ jobs:
           # 但释放函数返回了「成功」。少掉的 4466 个里就有 @sinclair/typebox 之类关键包，
           # 于是 App 启动即报 Cannot find package。
           # 现在把完整清单烤进 assets，App 释放后逐条 File.exists() 比对，缺一个就重试。
-          ( cd "$DEST" && find . -type f | sed 's|^\./||' | sort ) > app/app/src/main/assets/openclaw/manifest.txt
+          # 为什么排除隐藏文件：Gradle 打包 assets 时默认忽略以 . 开头的路径，
+          # 把 .buildstamp / .package-lock.json / .github/ 写进清单只会让 App
+          # 永远比对失败（清单 52414 条 vs 包里 51350 条，差 1064 全是隐藏文件）。
+          # 这些文件对运行时没有用，所以清单和实际包保持一致：一律排除点开头路径。
+          ( cd "$DEST" && find . -type f -not -path '*/.*' | sed 's|^\./||' | sort ) > app/app/src/main/assets/openclaw/manifest.txt
           MANI=$(wc -l < app/app/src/main/assets/openclaw/manifest.txt)
           echo "清单条数：$MANI"
           test "$MANI" -gt 50000 || { echo "✗ 清单条数异常：$MANI"; exit 1; }
