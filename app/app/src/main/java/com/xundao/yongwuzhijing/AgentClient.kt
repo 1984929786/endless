@@ -32,11 +32,14 @@ object AgentClient {
     /**
      * 候选端口，按顺序试。
      *
-     * 为什么多个：18990 上可能已经有人占着（比如网关自己、或其他代理），
-     * 而且不同部署环境下可用端口不同。用 18789 既是网关原生端口，也是
-     * 反向代理/转发的常用落点。第一个能完成 TCP 握手且 /health 返 200 的就锁定。
+     * 18795：本机转发层，指向网关 18789。优先，因为能跟我的主控制通道解耦。
+     * 18789：网关原生端口，作为回退。
+     *
+     * 【绝不能写 18790】—— 那是 App 自己 ModelBridge 的端口（见 ModelBridge.port）。
+     * 2026-11-21 的坑：改为 18790 后 Socket connect 秒通、却永远拿不到 /health 200，
+     * 因为连到的是自己的本地模型服务，它没有 /health 路由。
      */
-    private val PORTS = intArrayOf(18789, 18790)
+    private val PORTS = intArrayOf(18795, 18789)
 
     /** 上一次探活成功的端口，-1 表示还没有 */
     @Volatile private var activePort = -1
@@ -75,28 +78,44 @@ object AgentClient {
      */
     fun selfTest(): String {
         val sb = StringBuilder()
-        for ((name, host) in listOf(
-            "ipv4" to HOST,
-            "ipv6" to "::1",
-            "localhost" to "localhost"
-        )) {
-            for (p in PORTS) {
-                val t0 = System.currentTimeMillis()
-                sb.append(name).append(':').append(p).append('=')
-                try {
-                    java.net.Socket().use { s ->
-                        s.connect(java.net.InetSocketAddress(host, p), 2000)
-                        sb.append("OK(").append(System.currentTimeMillis() - t0).append("ms)")
-                    }
-                } catch (t: Throwable) {
-                    sb.append(t.javaClass.simpleName)
-                        .append('(').append(System.currentTimeMillis() - t0).append("ms)")
-                }
-                sb.append(' ')
-            }
+        // 只测 ipv4 + 两个端口：6 组合太多，而且 ipv6/localhost 已经知道都能连
+        for (p in PORTS) {
+            sb.append(p).append(':').append(httpCheck(p)).append(' ')
         }
         if (activePort > 0) sb.append("active=").append(activePort)
         return sb.toString().trim()
+    }
+
+    /**
+     * 真的发一个 GET /health 并读回响应，返回简短结果。
+     *
+     * 为什么不只用 connect()：2026-11-21 的教训 —— 裸 Socket connect 成功
+     * 只证明「有东西在监听这个端口」，不证明它是网关。
+     * App 自己的 ModelBridge 就占着 18790，connect 秒通，但 /health 不是网关的路由，
+     * 永远拿不到 200。必须看真实响应才能分辨。
+     */
+    private fun httpCheck(port: Int): String {
+        val t0 = System.currentTimeMillis()
+        return try {
+            java.net.Socket().use { s ->
+                s.connect(java.net.InetSocketAddress(HOST, port), 2000)
+                s.soTimeout = 2500
+                val req = "GET /health HTTP/1.1\r\nHost: $HOST:$port\r\n" +
+                        "Authorization: Bearer $token\r\nConnection: close\r\n\r\n"
+                s.getOutputStream().apply { write(req.toByteArray()); flush() }
+                val buf = ByteArray(256)
+                val n = s.getInputStream().read(buf)
+                val ms = System.currentTimeMillis() - t0
+                if (n <= 0) "empty(${ms}ms)" else {
+                    val line = String(buf, 0, n, Charsets.ISO_8859_1).lineSequence().firstOrNull() ?: ""
+                    // 只要状态码，不要理由短语（中文撑爆界面）
+                    val code = line.split(' ').getOrNull(1) ?: line.take(12)
+                    "$code(${ms}ms)"
+                }
+            }
+        } catch (t: Throwable) {
+            t.javaClass.simpleName + "(${System.currentTimeMillis() - t0}ms)"
+        }
     }
 
     /** 清空探活缓存，下一句话强制重新探测（诊断用）。 */
