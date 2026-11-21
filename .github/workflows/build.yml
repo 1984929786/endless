@@ -198,17 +198,43 @@ jobs:
           mkdir -p "$DEST"
           # node 改名 libnode.so：Android 只允许执行 lib/ 目录下以 lib*.so 命名的文件
           cp "$NODE" "$DEST/libnode.so"
-          echo "=== 配套库（补齐已有 .so 的版本差异）==="
+
+          # 关键：Android packing 只收楼 lib<name>.so 形式，
+          # libicuuc.so.79.1、libz.so.1.4 这种多级版本号会被静默丢弃（实测 2026-11-21）。
+          # 所以全部改成 lib<name><版本拼接>.so：
+          #   libicuuc.so.79.1 -> libicuuc79.so
+          #   libz.so.1.4      -> libz1.so
+          #   libcrypto.so.3   -> libcrypto3.so
+          # 并在 Kotlin 侧建同名软链（GatewayLauncher.ensureSymlinks 已兼容）。
+          echo "=== 拷入并重命名 Termux 库 ==="
           find /tmp/tx/ex -name "*.so*" -type f | while read -r f; do
             b=$(basename "$f")
-            # 只拷 jniLibs 里没有的，已有的以仓库为准
-            if [ ! -f "$DEST/$b" ]; then
-              cp "$f" "$DEST/$b" && echo "  + $b"
+            case "$b" in
+              *.so)
+                new="$b" ;;
+              *.so.*)
+                # libicuuc.so.79.1 -> 基名 libicuuc，主版本 79
+                base=${b%%.so.*}
+                rest=${b#*.so.}
+                major=${rest%%.*}
+                major=${major%%-*}
+                new="${base}${major}.so" ;;
+              *)
+                continue ;;
+            esac
+            if [ ! -f "$DEST/$new" ]; then
+              cp "$f" "$DEST/$new" && echo "  $b -> $new"
             fi
           done
+
           echo "=== jniLibs 最终清单 ==="
-          ls -lh "$DEST" | awk '{print $5, $9}'
+          ls -lh "$DEST" | awk 'NR>1{print $5, $9}'
+          echo "=== 校验必需库 ==="
           test -f "$DEST/libnode.so" || { echo "✗ libnode.so 缺失"; exit 1; }
+          for need in libicuuc* libicui18n* libicudata* libcrypto* libssl* libz[0-9]* libcares*; do
+            ls "$DEST"/$need >/dev/null 2>&1 || { echo "✗ 缺 $need"; exit 1; }
+          done
+          echo "✓ 原生库齐全"
 
       - name: Build debug APK
         working-directory: app
