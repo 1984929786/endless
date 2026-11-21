@@ -324,11 +324,13 @@ jobs:
           #      清单 52023 条 vs 包内 51350 条 → App 永远校验不过
           # 现在在 CI 里就把两边对平，不允许带偏差出包。
           echo "=== 清单 vs 包内文件数比对 ==="
-          unzip -p "$APK" "assets/openclaw/manifest.txt" > /tmp/mani.txt
+          unzip -p "$APK" "assets/openclaw/manifest.txt" | grep -v '^$' > /tmp/mani.txt
           MANI=$(wc -l < /tmp/mani.txt)
           unzip -l "$APK" | grep "assets/openclaw/runtime/" | grep -v '/$' \
-            | sed 's|^.*assets/openclaw/runtime/||' | sort > /tmp/inpkg.txt
+            | sed 's|^.*assets/openclaw/runtime/||' | grep -v '^$' | sort > /tmp/inpkg.txt
           INPKG=$(wc -l < /tmp/inpkg.txt)
+          # 两边都排序，grep -Fxv 才能可靠工作（不排序时 -f 仍然可用，但排序便于人看）
+          sort /tmp/mani.txt -o /tmp/mani.txt
           echo "清单 $MANI 条 / 包内 runtime 文件 $INPKG 个"
           # 硬判据：清单里的每一条必须都在包里。缺一个 = 坏包，直接失败。
           LACK=$(grep -Fxv -f /tmp/inpkg.txt /tmp/mani.txt | head -10)
