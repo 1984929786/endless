@@ -153,15 +153,19 @@ class GatewayLauncher(private val ctx: Context) {
         }
         val available = nativeDir.list()?.toSet() ?: emptySet()
 
-        // 标准名 → 可能的带后缀来源（按优先级）
+        // 标准名 → 可能的实际文件名（按优先级）
+        //
+        // 为什么这么乱：Android 打包只接受 lib<name>.so 格式，Termux 的
+        // libicuuc.so.79.1 这种多级版本号会被静默丢弃。所以 CI 把它重命名成
+        // libicuuc79.so，运行时再建回标准名软链。下面每个条目都要列全所有可能。
         val needs = mapOf(
             "libcrypto.so.3" to listOf("libcrypto.so.3", "libcrypto3.so"),
             "libssl.so.3" to listOf("libssl.so.3", "libssl3.so"),
-            "libz.so.1" to listOf("libz.so.1", "libz13.so", "libz.so"),
-            "libsqlite3.so" to listOf("libsqlite3.so", "libsqlite354.so"),
-            "libicui18n.so.78" to listOf("libicui18n.so.78", "libicui18n78.so"),
-            "libicuuc.so.78" to listOf("libicuuc.so.78", "libicuuc78.so"),
-            "libicudata.so.78" to listOf("libicudata.so.78", "libicudata78.so"),
+            "libz.so.1" to listOf("libz.so.1", "libz1.so", "libz13.so"),
+            "libsqlite3.so" to listOf("libsqlite3.so", "libsqlite354.so", "libsqlite3.so.3.54.1"),
+            "libicuuc.so.79" to listOf("libicuuc.so.79", "libicuuc79.so", "libicuuc.so.78", "libicuuc78.so"),
+            "libicui18n.so.79" to listOf("libicui18n.so.79", "libicui18n79.so", "libicui18n.so.78", "libicui18n78.so"),
+            "libicudata.so.79" to listOf("libicudata.so.79", "libicudata79.so", "libicudata.so.78", "libicudata78.so"),
             "libcares.so" to listOf("libcares.so"),
             "libc++_shared.so" to listOf("libc++_shared.so"),
         )
