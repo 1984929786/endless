@@ -48,7 +48,7 @@ class MainActivity : AppCompatActivity() {
                         // 配置里的 token 是 App 写进去的固定值，读回来只为确认一致
                         val cfg = java.io.File(applicationContext.filesDir, "openclaw/home/openclaw.json")
                         val gotToken = AgentClient.loadToken(cfg)
-                        Boot.trace(applicationContext, "网关 token 就绪: " + gotToken.take(8) + "…")
+                        Boot.trace(applicationContext, "网关 token 读取结果=" + gotToken + " | " + gw.diag())
                     } else {
                         Boot.trace(applicationContext, "网关启动失败: " + gw.lastError() + " | " + gw.diag())
                     }

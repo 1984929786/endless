@@ -46,7 +46,7 @@ class GatewayLauncher(private val ctx: Context) {
 
         /** 实例版的「进程活没活」（单例后界面就该用这个） */
         fun isProcAlive(): Boolean = try {
-            proc?.isAlive == true
+            INSTANCE?.proc?.isAlive == true
         } catch (t: Throwable) {
             false
         }
