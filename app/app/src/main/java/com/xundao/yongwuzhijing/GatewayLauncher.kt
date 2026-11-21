@@ -37,19 +37,15 @@ class GatewayLauncher(private val ctx: Context) {
         /** 最近一次拉起的网关进程，给界面「网关」页读活没活 */
         @Volatile private var lastProc: Process? = null
 
-        /** 进程还活着吗（不探端口，纯看 PID 活没活） */
-        fun runningProcAlive(): Boolean = try {
-            lastProc?.isAlive == true
-        } catch (t: Throwable) {
-            false
-        }
-
-        /** 实例版的「进程活没活」（单例后界面就该用这个） */
-        fun isProcAlive(): Boolean = try {
+        /** 进程还活着吗（纯看 PID，不探端口）——单例后界面用这个 */
+        fun procAlive(): Boolean = try {
             INSTANCE?.proc?.isAlive == true
         } catch (t: Throwable) {
             false
         }
+
+        /** 实例版（保留旧名，别的代码可能在用） */
+        fun runningProcAlive(): Boolean = procAlive()
 
         /**
          * 内嵌网关端口。**不能是 18789（寻道在用）也不能是 18790（本地模型）。**
@@ -367,7 +363,6 @@ class GatewayLauncher(private val ctx: Context) {
 
             val p = pb.start()
             proc = p
-            lastProc = p
             startSteps.add("spawned")
             Boot.trace(ctx, "网关进程已启动 pid=" + pidOf(p))
 

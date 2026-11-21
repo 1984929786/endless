@@ -83,7 +83,7 @@ class NativeBridge(
         val o = JSONObject()
         val gw = GatewayLauncher.get(context)
         o.put("port", GatewayLauncher.PORT)
-        o.put("proc", gw.isProcAlive())
+        o.put("proc", GatewayLauncher.procAlive())
         o.put("probe", AgentClient.probe())
         o.put("health", AgentClient.healthLine())
         o.put("tokenHint", if (AgentClient.token.isEmpty()) "(空)" else AgentClient.token.take(8) + "…" + AgentClient.token.length + "位")
