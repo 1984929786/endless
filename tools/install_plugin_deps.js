@@ -67,7 +67,13 @@ console.log('需要安装 ' + missing.length + ' 个：');
 for (const [n, o] of missing) console.log('   ' + n + '@' + o.ver + '  [' + o.from.join(',') + ']');
 
 // 3. 在隔离目录安装
-const tmp = path.join(root, '.plugin-deps-tmp');
+// 【为什么把临时目录放在包根旁边而不是 /tmp】
+// 后面用 fs.renameSync 把装好的包移到包根。rename 只能同文件系统原子完成；
+// 跨文件系统（如 runner 的 /tmp 是 tmpfs）Node 会静默退化成「递归复制 + 删除」，
+// 几百 MB 原生包会拖成几十分钟且无任何输出 —— 看上去就是卡死。
+// 放在包根 node_modules 内部，与 rename 目标同盘，毫秒完成。
+fs.mkdirSync(rootNM, { recursive: true });
+const tmp = path.join(rootNM, '.plugin-deps-tmp');
 fs.rmSync(tmp, { recursive: true, force: true });
 fs.mkdirSync(tmp, { recursive: true });
 const deps = {};
@@ -88,7 +94,9 @@ const cpu = process.env.NPM_PLATFORM_CPU || 'arm64';
 const args = ['install', '--no-audit', '--no-fund', '--omit=dev', '--ignore-scripts',
   '--no-package-lock', '--os=' + os, '--cpu=' + cpu];
 console.log('=== 隔离安装: npm ' + args.join(' ') + ' ===');
+const t0 = Date.now();
 const r = spawnSync('npm', args, { cwd: tmp, encoding: 'utf8', stdio: 'pipe', shell: false });
+console.log('   npm 耗时 ' + ((Date.now() - t0) / 1000).toFixed(1) + 's');
 if (r.stdout) process.stdout.write(r.stdout.slice(-3000));
 if (r.status !== 0) {
   console.log('✗ npm install 失败 (status=' + r.status + ')');
@@ -104,18 +112,28 @@ function mergeDir(src, dst) {
   fs.mkdirSync(dst, { recursive: true });
   for (const name of fs.readdirSync(src)) {
     const s = path.join(src, name), d = path.join(dst, name);
-    if (name.startsWith('@')) { mergeDir(s, d); continue; }
+    let dstIsDir = false;
+    try { dstIsDir = fs.statSync(d).isDirectory(); } catch (_) {}
+    const srcIsDir = fs.statSync(s).isDirectory();
+
     if (!fs.existsSync(d)) {
-      fs.renameSync(s, d);
-    } else {
-      // 已存在：保留原有的（顶层 npm install 装的那份优先）
-      const sPkg = path.join(s, 'package.json'), dPkg = path.join(d, 'package.json');
-      if (fs.existsSync(sPkg) && !fs.existsSync(dPkg)) fs.renameSync(s, d);
+      fs.renameSync(s, d);            // 同盘，毫秒
+    } else if (srcIsDir && dstIsDir) {
+      mergeDir(s, d);                 // 两边都有同名目录：递归补齐，不跳过
+    } else if (srcIsDir && !dstIsDir) {
+      skippedExisting.push(name);
     }
+    // 目标已存在同名文件：保留目标（顶层 npm install 那份优先）
   }
 }
+const skippedExisting = [];
 console.log('=== 合并到包根 node_modules ===');
+const t1 = Date.now();
 mergeDir(gotNM, rootNM);
+console.log('   合并耗时 ' + ((Date.now() - t1) / 1000).toFixed(1) + 's');
+if (skippedExisting.length) {
+  console.log('   以下同名项已存在且类型冲突，保留原有: ' + skippedExisting.join(', '));
+}
 fs.rmSync(tmp, { recursive: true, force: true });
 
 // 5. 断言

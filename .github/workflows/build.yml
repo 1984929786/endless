@@ -118,7 +118,7 @@ jobs:
       #    through root dist chunks, so runtime dependencies declared in
       #    dist/extensions/*/package.json must also resolve from the package root
       #    node_modules"），而扩展的依赖没装到包根 → 运行时
-      #   MODULE_NOT_FOUND（现场：dist/client-Cm0jR4_W.js 找不到 @slack/web-api）。
+      #   MODULE_NOT_FOUND（现���：dist/client-Cm0jR4_W.js 找不到 @slack/web-api）。
       #
       # 【修法】用 tools/install_plugin_deps.js：扫同一批扩展 manifest，但装到隔离目录
       #   再合并进包根，避开 openclaw 自己的 devDependencies。
@@ -191,6 +191,25 @@ jobs:
           # 断言写成「规则」而不是「断言 slack」：以后扩展增减自动覆盖。
           echo "=== 强断言：扩展运行时依赖 ==="
           node tools/check_plugin_deps.js "$DEST"
+
+          # ===== 【2026-11-23 新增】剔除非运行时产物，绕开 zip 65535 条目上限 =====
+          # 事故：装了 58 个扩展依赖后文件涨到 89534，AGP 的 apkzlib 写死
+          # MAX=65535 → `packageDebug` 直接失败：Too many zip entries 89534。
+          #
+          # 试过并否掉的方案：
+          #   ZIP64          → apksigner 报 ApkFormatException，AOSP 安装器零 ZIP64 代码
+          #   裁禁用扩展依赖 → 实测崩：chalk 4 内部 require('supports-color') 不在
+          #                    dependencies 声明里，删一个都起不来。删依赖 = 赌博。
+          #
+          # 现行判据：只删运行时绝对用不到的开发期产物，一个依赖都不碰。
+          #   *.map / *.d.ts / *.ts / test 目录 / 非 README 的 .md
+          # Node 运行时只加载 .js/.json/.node，这些删了不可能影响运行。
+          echo "=== 剔除非运行时产物（.d.ts / .map / 测试 / 文档）==="
+          node tools/strip_nonruntime.js "$DEST" --apply
+          # 硬断言：删完必须留出余量，否则下一版还会撞上限
+          RUNTIME_FILES=$(find "$DEST" -type f | wc -l)
+          echo "runtime 文件数：$RUNTIME_FILES（zip 上限 65535）"
+          test "$RUNTIME_FILES" -lt 60000 || { echo "✗ 文件数 $RUNTIME_FILES 太接近 65535 上限，拒绝打包"; exit 1; }
           # 清掉 npm 包里的点开头文件（.gitattributes/.gitignore/.npmignore/.package-lock.json 等）。
           # 2026-11-22 现场：清单 52414 条 / 包内 52417 个，唯独
           # node_modules/fast-uri/.gitattributes 没进包 —— aapt 对点开头的
@@ -227,12 +246,15 @@ jobs:
           # 两边必须一致，否则 App 校验时永远差一截。
           # 【2026-11-22 修正】清单必须用「aapt 真实规则」过一遍再写。
           # 上一版直接 find 全量，aapt 又按 ignoreAssetsPattern 丢掉一部分，
-          # 两边永远对不上 → App 释放后校验失败。现在生成时就用同一套规则过滤，
+          # 两边永远对不上 → App 释放后校验失��。现在生成时就用同一套规则过滤，
           # 清单 = 包里应该有的文件，一一对应。
           node tools/make_manifest.js "$DEST" app/app/src/main/assets/openclaw/manifest.txt app/app/build.gradle
           MANI=$(wc -l < app/app/src/main/assets/openclaw/manifest.txt)
           echo "清单条数：$MANI"
-          test "$MANI" -gt 50000 || { echo "✗ 清单条数异常：$MANI"; exit 1; }
+          # 【2026-11-23】阈值从 50000 降到 30000：剔除非运行时产物后
+          # 实测 37055 个文件（原 85856），清单也跟着降到约 3.7 万条。
+          # 写 30000 是为了拦住「清单意外空了/大块丢失」，不是卡死具体数字。
+          test "$MANI" -gt 30000 || { echo "✗ 清单条数异常：$MANI"; exit 1; }
           # 清单必须含这两个关键包，否则以后出问题查不出来
           grep -q 'node_modules/@sinclair/typebox/build/esm/index.mjs' app/app/src/main/assets/openclaw/manifest.txt || { echo '✗ 清单缺 typebox'; exit 1; }
           grep -q 'dist/entry.js' app/app/src/main/assets/openclaw/manifest.txt || { echo '✗ 清单缺 dist/entry.js'; exit 1; }
@@ -283,7 +305,7 @@ jobs:
 
           # 关键：Android packing 只收楼 lib<name>.so 形式，
           # libicuuc.so.79.1、libz.so.1.4 这种多级版本号会被静默丢弃（实测 2026-11-21）。
-          # 所以全部改成 lib<name><版本拼接>.so：
+          # 所以全部改成 lib<name><��本拼接>.so：
           #   libicuuc.so.79.1 -> libicuuc79.so
           #   libz.so.1.4      -> libz1.so
           #   libcrypto.so.3   -> libcrypto3.so
@@ -365,7 +387,7 @@ jobs:
       # 但「包里有什么」是确定的事实。所以清单直接由包内文件生成，
       # App 侧逐条校验就永远不会再误报。
       # 【2026-11-22 顺序关键】签名必须在重写清单之后！
-      # 重写 zip 会改内容 → 破坏任何已有签名。所以流程是：
+      # 重写 zip 会改内容 → 破坏任何���有签名。所以流程是：
       #   构建（未签）→ 重写清单 → *签名*
       # 之前的错误：gradle 内签 → 重写清单 → 签名作废 → 手机报「未包含任何证书」。
       # 【2026-11-22】判据检查：防止「零字节文件被当成缺失」这类错误重现。
@@ -463,7 +485,12 @@ jobs:
                "$GITHUB_WORKSPACE/app/app/build.gradle"
 
       - name: Upload APK
-        if: always()
+        # 【2026-11-23 改】原来是 if: always() —— 构建失败也会上传。
+        # 后果：`packageDebug` 因 Too many zip entries 失败后，
+        # 后续步骤照样跑，最后上传了一个缺 EOCD 的 1.5GB 残片，
+        # 看起来「构建成功、有产物」，实际是装不了的坏包。
+        # 上传只在真成功时发生；失败就要看到失败，不要假产物。
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: endless-debug-apk
