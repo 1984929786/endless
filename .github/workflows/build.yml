@@ -279,6 +279,17 @@ jobs:
         working-directory: app
         run: |
           set -o pipefail
+          # 【2026-11-22】必须先确保签名文件存在，否则产出无证书包，手机装不上。
+          # working-directory 已经是 app/ 模块目录，keystore 就在当前目录。
+          KS=ywzj-debug.keystore
+          if [ ! -f "$KS" ]; then
+            echo "=== 生成 debug keystore ==="
+            keytool -genkeypair -v \
+              -keystore "$KS" -storetype JKS \
+              -alias ywzj -keyalg RSA -keysize 2048 -validity 10000 \
+              -storepass yongwuzhijing -keypass yongwuzhijing \
+              -dname "CN=YongWuZhiJing, OU=Dev, O=XunDao, L=CN, ST=CN, C=CN"
+          fi
           gradle assembleDebug --no-daemon 2>&1 | tee /tmp/build.log > /dev/null || true
           if grep -q "BUILD SUCCESSFUL" /tmp/build.log; then
             echo "✓ 构建成功"
@@ -303,6 +314,10 @@ jobs:
       # 我们无法在构建前预测 AGP 到底会丢什么（不同版本行为不同）；
       # 但「包里有什么」是确定的事实。所以清单直接由包内文件生成，
       # App 侧逐条校验就永远不会再误报。
+      # 【2026-11-22 顺序关键】签名必须在重写清单之后！
+      # 重写 zip 会改内容 → 破坏任何已有签名。所以流程是：
+      #   构建（未签）→ 重写清单 → *签名*
+      # 之前的错误：gradle 内签 → 重写清单 → 签名作废 → 手机报「未包含任何证书」。
       - name: Sync manifest with real APK contents
         run: |
           set -e
@@ -310,7 +325,26 @@ jobs:
           test -n "$APK" || { echo "✗ 未找到 APK"; exit 1; }
           node tools/sync_manifest_into_apk.js "$APK" "$APK.out.apk"
           mv "$APK.out.apk" "$APK"
-          echo "✓ 清单已同步进包"
+          echo "✓ 清单已同步进包（此时包未签名）"
+
+      # 用 apksigner 签 v1+v2（Android 7.0+ 都用 v2，v1 兼容老系统）
+      - name: Sign APK
+        run: |
+          set -e
+          APK=$(find app -name "*.apk" | head -1)
+          KS=app/app/ywzj-debug.keystore
+          # build 步骤的 working-directory 是 app/，所以 keystore 落在 app/ywzj-debug.keystore
+          [ -f "$KS" ] || KS=app/ywzj-debug.keystore
+          test -f "$KS" || { echo "✗ 缺 keystore"; exit 1; }
+          BT=$(ls -d "$ANDROID_HOME"/build-tools/*/ | sort -V | tail -1)
+          "${BT}apksigner" sign \
+            --ks "$KS" --ks-key-alias ywzj \
+            --ks-pass pass:yongwuzhijing --key-pass pass:yongwuzhijing \
+            --v1-signing-enabled true --v2-signing-enabled true \
+            "$APK"
+          echo "=== 签名校验 ==="
+          "${BT}apksigner" verify --print-certs "$APK" | head -6
+          echo "✓ 已签名"
 
       - name: Verify APK contents
         working-directory: app

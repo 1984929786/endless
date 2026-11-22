@@ -91,14 +91,30 @@ if (extra.length) {
   for (const x of extra.slice(0, 5)) console.log('   ' + x);
 }
 
-// 回归断言：openai/_vendor 曾被 AGP 的 ignoreAssetsPattern 静默丢弃。
-if (!entries.some(en => en.name.startsWith(PREFIX + 'node_modules/openai/_vendor/'))) {
-  console.log('✗ node_modules/openai/_vendor/ 被丢弃 —— ignoreAssetsPattern 没生效');
-  process.exit(1);
+// 回归断言：曾经被丢弃的 `_` / `.` 开头内容必须真的在包里。
+// ⚠ 2026-11-22 教训：不要写死「某个包一定存在」的路径。
+// 我曾断言 `node_modules/openai/_vendor/`，但这版运行时根本没装那个目录，
+// 结果包是好的、断言却永远失败，白白浪费一轮 15 分钟构建 + 一次下载。
+// 正确做法：从**清单里真实存在**的 `_` / `.` 开头条目取样，要求它们在包里。
+const unders = mani.filter(x => x.split('/').some(s => /^[_]./.test(s)));
+const dots = mani.filter(x => x.split('/').some(s => /^\.[^/]/.test(s)) && !/\/\.(git|svn)\//.test(x));
+if (unders.length) {
+  const hit = unders.filter(x => inPkg.has(x));
+  if (hit.length !== unders.length) {
+    const lost = unders.filter(x => !inPkg.has(x));
+    console.log('✗ ' + lost.length + ' 个下划线开头文件被丢弃（应全在包里）:');
+    for (const x of lost.slice(0, 10)) console.log('   ' + x);
+    process.exit(1);
+  }
+  console.log('✓ ' + unders.length + ' 个下划线开头文件全在包里');
 }
-// 回归断言：discord 的 _generated_ / _interactions 也曾整片消失
-if (!entries.some(en => en.name.includes('/discord-api-types/_generated_/'))) {
-  console.log('✗ discord-api-types/_generated_/ 被丢弃');
-  process.exit(1);
+if (dots.length) {
+  const lost = dots.filter(x => !inPkg.has(x));
+  if (lost.length) {
+    console.log('✗ ' + lost.length + ' 个点开头文件被丢弃:');
+    for (const x of lost.slice(0, 10)) console.log('   ' + x);
+    process.exit(1);
+  }
+  console.log('✓ ' + dots.length + ' 个点开头文件全在包里');
 }
-console.log('✓ 清单 ' + mani.length + ' 条全部在包内，_ / . 开头的目录也都在');
+console.log('✓ 清单 ' + mani.length + ' 条全部在包内');

@@ -106,28 +106,33 @@ for (const e of entries) {
   const lExtraLen = lh.readUInt16LE(28);
   const dataStart = e.lho + 30 + lNameLen + lExtraLen;
 
+  // 原中央目录项（含 verMade / externalAttributes 等所有字段），原样保留
+  const origCd = cd.slice(e.cdStart, e.cdStart + e.cdLen);
+
   const nameBuf = Buffer.from(e.name, 'utf8');
   const isMani = (e.name === MANIFEST);
-  const payload = isMani ? maniRaw : null;
   const csize = isMani ? maniRaw.length : e.csize;
   const usize = isMani ? maniData.length : e.usize;
   const crc = isMani ? newCrc : e.crc;
   const method = isMani ? 8 : e.method;
 
-  // 本地头
+  // 本地头：原样复制，只改需要改的字段（不丢 version/flags，不丢 extra）
   const nLh = Buffer.alloc(30);
   lh.copy(nLh);
   nLh.writeUInt16LE(method, 8);
   nLh.writeUInt32LE(crc >>> 0, 14);
   nLh.writeUInt32LE(csize >>> 0, 18);
   nLh.writeUInt32LE(usize >>> 0, 22);
-  nLh.writeUInt16LE(nameBuf.length, 26);
-  nLh.writeUInt16LE(0, 28); // 去掉 extra，保持简单
 
   fs.writeSync(out, nLh);
   fs.writeSync(out, nameBuf);
+  // 本地 extra 原样保留（可能有 zip64 / unicode path 等）
+  const lExtra = Buffer.alloc(lExtraLen);
+  if (lExtraLen) fs.readSync(fd, lExtra, 0, lExtraLen, e.lho + 30 + lNameLen);
+  fs.writeSync(out, lExtra);
+
   const thisOffset = offset;
-  offset += 30 + nameBuf.length;
+  offset += 30 + nameBuf.length + lExtraLen;
 
   if (isMani) {
     fs.writeSync(out, maniRaw);
@@ -137,27 +142,22 @@ for (const e of entries) {
   offset += csize;
   written++;
 
-  // 中央目录项
-  const ch = Buffer.alloc(46);
-  ch.writeUInt32LE(0x02014b50, 0);
-  ch.writeUInt16LE(20, 4);
-  ch.writeUInt16LE(20, 6);
-  ch.writeUInt16LE(0, 8);
+  // 中央目录项：**整条复制原条目**，只改 method/crc/size/offset
+  const ch = Buffer.from(origCd);
   ch.writeUInt16LE(method, 10);
-  ch.writeUInt16LE(0, 12);
-  ch.writeUInt16LE(0x21, 14);
   ch.writeUInt32LE(crc >>> 0, 16);
   ch.writeUInt32LE(csize >>> 0, 20);
   ch.writeUInt32LE(usize >>> 0, 24);
-  ch.writeUInt16LE(nameBuf.length, 28);
   ch.writeUInt32LE(thisOffset, 42);
-  central.push(ch, nameBuf);
+  central.push(ch);
 }
 
+// EOCD 也原样复制，只改数量/大小/偏移
 const cdBuf = Buffer.concat(central);
 fs.writeSync(out, cdBuf);
-const eo = Buffer.alloc(22);
-eo.writeUInt32LE(0x06054b50, 0);
+const origEo = Buffer.alloc(22);
+fs.readSync(fd, origEo, 0, 22, eocd);
+const eo = Buffer.from(origEo);
 eo.writeUInt16LE(written, 8);
 eo.writeUInt16LE(written, 10);
 eo.writeUInt32LE(cdBuf.length, 12);
@@ -168,3 +168,37 @@ fs.closeSync(fd);
 
 console.log('✓ 包内 runtime 文件 ' + inPkg.length + ' 条已写入清单');
 console.log('✓ 新包 ' + outPath + '（条目 ' + written + ' 个）');
+
+// ---- 自检：元数据必须完整保留 ----
+// 2026-11-22 教训：我把中央目录的 verMade / externalAttributes 全写成 0，
+// Android 安装器报「该安装包未包含任何证书」，包看着完好但装不上。
+const chk = fs.openSync(outPath, 'r');
+const chkSt = fs.fstatSync(chk);
+const chkEb = Buffer.alloc(22);
+fs.readSync(chk, chkEb, 0, 22, chkSt.size - 22);
+const chkCnt = chkEb.readUInt16LE(10);
+const chkCdSize = chkEb.readUInt32LE(12);
+const chkCdOff = chkEb.readUInt32LE(16);
+const chkCd = Buffer.alloc(chkCdSize);
+fs.readSync(chk, chkCd, 0, chkCdSize, chkCdOff);
+{
+  let q = 0, bad = 0;
+  for (let k = 0; k < chkCnt; k++) {
+    const nl = chkCd.readUInt16LE(q + 28), el = chkCd.readUInt16LE(q + 30), cl = chkCd.readUInt16LE(q + 32);
+    const verMade = chkCd.readUInt16LE(q + 4);
+    const extAttr = chkCd.readUInt32LE(q + 38);
+    const orig = entries[k];
+    if (orig) {
+      const origVer = cd.readUInt16LE(orig.cdStart + 4);
+      const origExt = cd.readUInt32LE(orig.cdStart + 38);
+      if (verMade !== origVer || extAttr !== origExt) {
+        if (bad < 3) console.log('  ✗ 元数据丢了: ' + chkCd.toString('utf8', q + 46, q + 46 + nl));
+        bad++;
+      }
+    }
+    q += 46 + nl + el + cl;
+  }
+  if (bad) { console.log('✗ ' + bad + ' 个条目元数据不一致，安装会失败'); process.exit(1); }
+  console.log('✓ 元数据自检通过（verMade / externalAttributes 全部保留）');
+}
+fs.closeSync(chk);

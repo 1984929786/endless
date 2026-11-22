@@ -11,8 +11,8 @@ android {
         applicationId "com.xundao.yongwuzhijing"
         minSdk 26
         targetSdk 34
-        versionCode 45
-        versionName "3.2.8"
+        versionCode 46
+        versionName "3.2.9"
 
         ndk {
             abiFilters 'arm64-v8a'
@@ -27,6 +27,11 @@ android {
             minifyEnabled false
         }
     }
+
+    // 【2026-11-22 签名说明】
+    // 不在 gradle 里签，因为流水线顺序是「构建 → 重写清单 → 签名」，
+    // 重写 zip 会让 gradle 的签名失效。apksigner 在 CI 最后一步执行（见 build.yml）。
+    // 曾经的 bug：gradle 内签 → 重写清单 → 签名作废 → 手机报「未包含任何证书」。
 
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
