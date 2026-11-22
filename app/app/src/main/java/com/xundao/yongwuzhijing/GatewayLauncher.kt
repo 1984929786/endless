@@ -223,7 +223,9 @@ class GatewayLauncher(private val ctx: Context) {
         for (rel in manifest) {
             if (rel.isBlank()) continue
             val dest = File(root, "runtime/$rel")
-            if (dest.exists() && dest.length() > 0) { files++; continue }
+            // 【2026-11-22】不能用 length()>0 判断“已释放”：零字节文件是合法的，
+            // 旧写法会让它们每次启动都重写一遍。只看存在且是普通文件。
+            if (dest.isFile) { files++; continue }
             try {
                 am.open("$ASSET_DIR/runtime/$rel").use { ins ->
                     dest.parentFile?.mkdirs()
@@ -243,7 +245,15 @@ class GatewayLauncher(private val ctx: Context) {
         return files
     }
 
-    /** 按清单逐条检查文件是否真的落地了。返回缺失列表（空 = 完好）。 */
+    /**
+     * 按清单逐条检查文件是否真的落地了。返回缺失列表（空 = 完好）。
+     *
+     * 【2026-11-22 修正】旧判据 `f.length() == 0L` 是错的：
+     * npm 包里合法存在零字节文件（占位 .js / 空 index 等），
+     * 当前运行时里正好有 23 个，导致释放完全成功却报“缺 23 个文件”。
+     * 正确判据：文件存在且是普通文件 即可。内容由 APK 的 CRC 保证，
+     * 释放阶段 copyTo 已保证字节一致，不需要用“长度 > 0”当代理。
+     */
     private fun verifyManifest(): List<String> {
         return try {
             val lines = ctx.assets.open("$ASSET_DIR/manifest.txt")
@@ -252,7 +262,7 @@ class GatewayLauncher(private val ctx: Context) {
             for (rel in lines) {
                 if (rel.isBlank()) continue
                 val f = File(root, "runtime/$rel")
-                if (!f.isFile || f.length() == 0L) bad.add(rel)
+                if (!f.isFile) bad.add(rel)
             }
             bad
         } catch (t: Throwable) {

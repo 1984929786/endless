@@ -318,6 +318,13 @@ jobs:
       # 重写 zip 会改内容 → 破坏任何已有签名。所以流程是：
       #   构建（未签）→ 重写清单 → *签名*
       # 之前的错误：gradle 内签 → 重写清单 → 签名作废 → 手机报「未包含任何证书」。
+      # 【2026-11-22】判据检查：防止「零字节文件被当成缺失」这类错误重现。
+      # 判据错了后面所有推断都是错的，所以把它做成阻断式检查，而不是靠记忆。
+      - name: Check release rules
+        run: |
+          set -e
+          node tools/check_release_rules.js app/app/src/main/java/com/xundao/yongwuzhijing/GatewayLauncher.kt
+
       - name: Sync manifest with real APK contents
         run: |
           set -e
