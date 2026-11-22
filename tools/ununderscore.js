@@ -3,17 +3,23 @@
 // 【为什么必须这么做（2026-11-22 定论）】
 // aapt2 内建默认丢弃 `_*`，而 `ignoreAssetsPattern '!_*'` **并不能放行** ——
 // 实测 3.4.0 包内下划线开头的路径段数量为 0，清单里也是 0。
-// 也就是说这个 pattern 机制对我们的需求无效，继续调 pattern 是死路。
+// 继续调 pattern 是死路。
 //
-// 与其赌打包器行为，不如让文件本身不触发规则：
-// 把 `_vendor` 改成 `AAA_vendor`（我们自己的前缀），
-// 同时把 JS 里 `'../_vendor/...'` 这类引用一起替换掉。
-// 这样 aapt 根本没有理由丢它，且不再依赖任何 ignoreAssetsPattern 配置。
+// 对策：让文件本身不触发规则 —— `_vendor` → `AAA_vendor`，同步改写引用。
+// 不再依赖任何打包器配置。
 //
-// 为什么用 `AAA_` 前缀：
-//   - 纯字母开头，不触发 `_*` / `.*` 任何默认规则
-//   - 字母序靠前，不影响 require 解析
-//   - 极不可能与 npm 包自身的真实文件名冲突
+// 【2026-11-22 第二次修正：替换范围】
+// 第一次自检报了 13 处「漏改」，逐条看过后分两类：
+//   A. 真的要改：`dist/provider-*.js` 里 bundler 内联的
+//      `.../node_modules/discord-api-types/payloads/v10/_interactions/...`
+//      —— 这是真实使用路径，前面是 `node_modules/`，不是 `../`，旧规则漏了。
+//   B. 绝不能改：package.json 里的 glob ignore 模式，
+//      如 `"!**/__fixtures__/"`、`"**/__snapshots__/"`。
+//      它们不是路径，是 npm 的排除模式；改了会让 npm 元数据变得无意义。
+//
+// 所以规则定为：
+//   - 替换「路径段」形式：前面必须是 `/`（含 `../` `./` 的末段）或引号
+//   - 不替换 glob 模式：前面是 `*` 或 `!` 的一律跳过
 //
 // 用法: node tools/ununderscore.js <assets/runtime 目录>
 
@@ -40,40 +46,79 @@ const names = new Set();
 collect(root, '', names);
 console.log('需要改名的路径段: ' + names.size);
 if (names.size === 0) { console.log('没有以 _ 开头的路径段，无需处理'); process.exit(0); }
-for (const n of [...names].slice(0, 20)) console.log('  ' + n + ' -> ' + PREFIX + n);
+for (const n of [...names]) console.log('  ' + n + ' -> ' + PREFIX + n);
 
-if (names.size > 20) console.log('  …共 ' + names.size + ' 个');
-
-// 第二遍：改名（从深到浅，避免父目录先改名导致子路径找不到）
-function renameDeep(dir, rel) {
-  const entries = fs.readdirSync(dir);
-  // 先递归处理子目录
-  for (const name of entries) {
+// 第二遍：改名（先递归子目录，再改本层，避免父目录先改名导致子路径失效）
+function renameDeep(dir) {
+  for (const name of fs.readdirSync(dir)) {
     const abs = path.join(dir, name);
     const st = fs.lstatSync(abs);
-    if (st.isDirectory() && !st.isSymbolicLink()) renameDeep(abs, rel ? rel + '/' + name : name);
+    if (st.isDirectory() && !st.isSymbolicLink()) renameDeep(abs);
   }
-  // 再改自己这一层的名字
   for (const name of fs.readdirSync(dir)) {
     if (name.startsWith('_') && name !== '_') {
       const from = path.join(dir, name);
       const to = path.join(dir, PREFIX + name);
-      if (fs.existsSync(to)) {
-        console.log('⚠ 目标已存在，跳过: ' + to);
-        continue;
-      }
+      if (fs.existsSync(to)) { console.log('⚠ 目标已存在，跳过: ' + to); continue; }
       fs.renameSync(from, to);
     }
   }
 }
-renameDeep(root, '');
+renameDeep(root);
 console.log('✓ 目录改名完成');
 
-// 第三遍：改写所有文本文件里的引用
-// 注意只替换「路径段」形式：'/xxx' 或 './xxx' 或 '../xxx' 或 '"xxx'
-const TEXT_EXT = new Set(['.js', '.mjs', '.cjs', '.json', '.map', '.ts', '.d.ts', '.md', '.txt']);
+// 第三遍：改写文本文件里的引用
+// 关键：只改「路径段」，不改 glob 模式。
+//   `.../frame/_vendor/x.js`  → 改（前面是 /）
+//   `"../_vendor/x.js"`       → 改（前面是引号）
+//   `"!**/__fixtures__/"`     → 不改（前面是 * 或 !）
+const TEXT_EXT = new Set(['.js', '.mjs', '.cjs', '.json', '.map', '.ts', '.md', '.txt']);
 let changed = 0;
 let scanned = 0;
+let replaced = 0;
+
+function isGlobContext(src, idx) {
+  // idx 指向待替换名字的起始位置。往前看最近的字符：
+  // 如果是 * 或 ! 或 / 后再跟 *，说明是 glob 模式
+  let j = idx - 1;
+  while (j >= 0 && (src[j] === ' ' || src[j] === '\t')) j--;
+  if (j >= 0 && (src[j] === '*' || src[j] === '!')) return true;
+  // `!**/` 这种
+  if (j >= 1 && src[j] === '/' && (src[j - 1] === '*' || src[j - 1] === '!')) return true;
+  return false;
+}
+
+function rewriteText(src, names) {
+  let out = '';
+  let i = 0;
+  let n = 0;
+  while (i < src.length) {
+    let hit = null;
+    for (const nm of names) {
+      // 路径段后面必须紧跟 / 或引号或空白或结尾；先做快速起点检查
+      if (src.startsWith(nm, i)) {
+        const after = i + nm.length;
+        const ac = src[after];
+        if (ac === undefined || ac === '/' || ac === '"' || ac === "'" || ac === ' ' || ac === '\\' || ac === '\n' || ac === '\r') {
+          // 前面必须是路径分隔符或引号或空白，才是路径段；否则可能是更长标识符的一部分
+          const bc = i > 0 ? src[i - 1] : undefined;
+          if (bc === undefined || bc === '/' || bc === '"' || bc === "'" || bc === ' ' || bc === '\\' || bc === '\n' || bc === '\t') {
+            if (!isGlobContext(src, i)) { hit = nm; break; }
+          }
+        }
+      }
+    }
+    if (hit) {
+      out += PREFIX + hit;
+      i += hit.length;
+      n++;
+    } else {
+      out += src[i];
+      i++;
+    }
+  }
+  return { out, n };
+}
 
 function rewrite(dir) {
   for (const name of fs.readdirSync(dir)) {
@@ -82,37 +127,23 @@ function rewrite(dir) {
     if (st.isDirectory()) { rewrite(abs); continue; }
     if (!st.isFile()) continue;
     const ext = path.extname(name).toLowerCase();
-    // .d.ts 的 extname 是 .ts，已包含；json/map 也改
     if (!TEXT_EXT.has(ext) && !name.endsWith('.d.ts')) continue;
-    if (st.size > 8 * 1024 * 1024) continue; // 超大文件跳过（如 .map 巨型文件）
+    if (st.size > 8 * 1024 * 1024) continue;
     scanned++;
     let src;
     try { src = fs.readFileSync(abs, 'utf8'); } catch (_) { continue; }
-    let out = src;
-    for (const n of names) {
-      // 匹配路径段边界：前面必须是 / ' " ` 或行首，后面必须是 / ' " ` 或空白
-      // 用 split/join 避免正则转义问题
-      out = out.split('"../' + n + '/').join('"../' + PREFIX + n + '/');
-      out = out.split("'../" + n + '/').join("'../" + PREFIX + n + '/');
-      out = out.split('"./' + n + '/').join('"./' + PREFIX + n + '/');
-      out = out.split("'./" + n + '/').join("'./" + PREFIX + n + '/');
-      out = out.split('"/' + n + '/').join('"/' + PREFIX + n + '/');
-      out = out.split("'/" + n + '/').join("'/" + PREFIX + n + '/');
-      out = out.split('\\"' + n + '\\/').join('\\"' + PREFIX + n + '\\/');
-      // package.json 的 "files"/"exports" 里会写裸路径 "_vendor/..."（前面没 ./ 也没 /）。
-      // 运行时不读这段，但改干净可以避免以后自己看花眼误判。
-      out = out.split('"' + n + '/').join('"' + PREFIX + n + '/');
-    }
+    const { out, n } = rewriteText(src, names);
     if (out !== src) {
       fs.writeFileSync(abs, out);
       changed++;
+      replaced += n;
     }
   }
 }
 rewrite(root);
-console.log('✓ 引用改写完成：扫描 ' + scanned + ' 个文件，改动 ' + changed + ' 个');
+console.log('✓ 引用改写完成：扫描 ' + scanned + ' 个文件，改动 ' + changed + ' 个，替换 ' + replaced + ' 处');
 
-// 自检：目录里不该再有 _ 开头的路径段
+// 自检一：目录里不该再有 _ 开头的路径段
 const left = new Set();
 collect(root, '', left);
 if (left.size) {
@@ -121,10 +152,9 @@ if (left.size) {
 }
 console.log('✓ 自检通过：无 _ 开头路径段');
 
-// 自检第二条（关键）：不能有漏改的引用。
-// 上一步的替换只覆盖 ../xxx/ ./xxx/ "/xxx/ 这几种写法，
-// 如果包代码里出现 require('pkg/_vendor/x') 这类包名内部路径就没改到。
-// 与其在手机上才发现 Cannot find module，不如在这里就拦住。
+// 自检二：不能有漏改的真实路径引用。
+// 【注意】只对「真实路径」报错：前面带 / 或引号的。
+// glob 模式（前面是 * 或 !）跳过 —— 那些改了反而错。
 const dangling = [];
 function scanRefs(dir) {
   for (const name of fs.readdirSync(dir)) {
@@ -137,25 +167,31 @@ function scanRefs(dir) {
     if (st.size > 8 * 1024 * 1024) continue;
     let src;
     try { src = fs.readFileSync(abs, 'utf8'); } catch (_) { continue; }
-    for (const n of names) {
-      // 找所有出现 "_vendor" 形态但前面不是我们前缀的地方
-      const needle = '/' + n + '/';
+    for (const nm of names) {
+      // 找 `/_name` 形态（前面是 /）且前面不是 PREFIX
+      const needle = '/' + nm;
       let idx = 0;
       while ((idx = src.indexOf(needle, idx)) !== -1) {
-        const before = src.slice(Math.max(0, idx - PREFIX.length), idx);
-        if (before !== PREFIX) {
-          dangling.push(path.relative(root, abs) + ' :: ' + src.slice(Math.max(0, idx - 40), idx + needle.length).replace(/\n/g, ' '));
-          break;
+        const prefixStart = idx - PREFIX.length;
+        const hasPrefix = prefixStart >= 0 && src.slice(prefixStart, idx) === PREFIX;
+        if (!hasPrefix) {
+          // 后面必须真的是路径段边界
+          const ac = src[idx + needle.length];
+          if (ac === '/' || ac === '"' || ac === "'" || ac === undefined) {
+            dangling.push(path.relative(root, abs) + ' :: ' + src.slice(Math.max(0, idx - 30), idx + needle.length + 10).replace(/\n/g, ' '));
+            break;
+          }
         }
         idx += needle.length;
       }
+      if (dangling.length > 30) break;
     }
   }
 }
 scanRefs(root);
 if (dangling.length) {
-  console.log('✗ 有 ' + dangling.length + ' 处漏改的引用（会导致 Cannot find module）：');
-  for (const d of dangling.slice(0, 10)) console.log('   ' + d);
+  console.log('✗ 有 ' + dangling.length + ' 处漏改的真实路径引用（会导致 Cannot find module）：');
+  for (const d of dangling.slice(0, 15)) console.log('   ' + d);
   process.exit(1);
 }
-console.log('✓ 自检通过：无漏改引用');
+console.log('✓ 自检通过：无漏改的真实路径引用');
