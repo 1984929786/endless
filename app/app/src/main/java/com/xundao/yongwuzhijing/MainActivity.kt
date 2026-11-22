@@ -58,6 +58,11 @@ class MainActivity : AppCompatActivity() {
             }, "gateway-boot").start()
 
             Boot.trace(applicationContext, "创建 WebView")
+
+            // 【2026-11-22 根因修复】申请电池优化白名单。
+            // 华为/小米等国产 ROM 不申请就一定会杀后台进程，网关活不过锁屏。
+            // 放在 UI 线程，但要等窗口就绪后再弹，否则会崩。
+            window.decorView.post { gw.requestIgnoreBatteryOptimizations(this) }
             web = WebView(this)
             setContentView(web)
 

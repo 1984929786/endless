@@ -129,7 +129,39 @@ class GatewayLauncher(private val ctx: Context) {
         startSteps.add("libs ok")
         if (!writeDefaultConfig()) return false
         startSteps.add("config ok")
-        return spawn()
+        if (!spawn()) return false
+        startSteps.add("spawn ok")
+        // 【2026-11-22 根因修复】网关进程跑起来之后，必须拉前台服务 + 唤醒锁，
+        // 否则锁屏即冻结 / 被省电策略杀掉。这一步失败不算启动失败（网关仍在跑），
+        // 但会记日志，方便排查。
+        try {
+            GatewayService.start(ctx)
+            startSteps.add("foreground ok")
+        } catch (t: Throwable) {
+            Boot.trace(ctx, "前台服务启动失败: ${t.javaClass.simpleName}: ${t.message}")
+        }
+        return true
+    }
+
+    /**
+     * 申请电池优化白名单（华为/小米等国产 ROM 不申请就一定会杀后台）。
+     * 这是系统弹窗，用户可能拒绝，所以不阻塞启动流程。
+     */
+    fun requestIgnoreBatteryOptimizations(activity: android.app.Activity) {
+        try {
+            val pm = activity.getSystemService(android.content.Context.POWER_SERVICE) as android.os.PowerManager
+            if (pm.isIgnoringBatteryOptimizations(activity.packageName)) {
+                Boot.trace(activity, "已在电池优化白名单")
+                return
+            }
+            val i = android.content.Intent(
+                android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS
+            )
+            i.data = android.net.Uri.parse("package:" + activity.packageName)
+            activity.startActivity(i)
+        } catch (t: Throwable) {
+            Boot.trace(activity, "申请电池白名单失败: ${t.message}")
+        }
     }
 
     fun stop() {
@@ -140,6 +172,7 @@ class GatewayLauncher(private val ctx: Context) {
         } catch (_: Throwable) {
         }
         proc = null
+        try { GatewayService.stop(ctx) } catch (_: Throwable) {}
     }
 
     // ---------- 内部 ----------

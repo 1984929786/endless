@@ -11,8 +11,8 @@ android {
         applicationId "com.xundao.yongwuzhijing"
         minSdk 26
         targetSdk 34
-        versionCode 47
-        versionName "3.3.0"
+        versionCode 48
+        versionName "3.4.0"
 
         ndk {
             abiFilters 'arm64-v8a'
@@ -76,6 +76,9 @@ android {
 
 dependencies {
     implementation 'androidx.appcompat:appcompat:1.6.1'
+    // 【2026-11-22】GatewayService 用 NotificationCompat，不依赖 appcompat 的传递依赖，
+    // 显式声明，避免上游改版本时编译失败。
+    implementation 'androidx.core:core-ktx:1.12.0'
     implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1'
     implementation project(':llama')
 }
