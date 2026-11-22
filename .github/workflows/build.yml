@@ -184,14 +184,13 @@ jobs:
           echo "=== 确认关键 JS ==="
           test -f "$DEST/dist/index.js" || { echo "✗ 缺 dist/index.js"; exit 1; }
 
-          # 【2026-11-22 关键断言】顶层 dist chunk 引用的裸模块必须全部可解析。
+          # 【2026-11-22 关键断言】扩展声明的运行时依赖必须全部可解析。
           # 拦住的真实报错：dist/client-Cm0jR4_W.js 里 import "@slack/web-api"
           # 但包根 node_modules 没这个包 → 运行时 MODULE_NOT_FOUND → 网关 500。
-          # 根因是 openclaw 的 postinstall 被 npm 拦掉（已在上面一步手动执行）。
+          # 根因是 openclaw 的 postinstall 被 npm 拦掉（已在上一步用自有脚本装好）。
           # 断言写成「规则」而不是「断言 slack」：以后扩展增减自动覆盖。
-          echo "=== 强断言：顶层 chunk 的裸模块依赖 ==="
-          YWZJ_ACORN_DIR="$PWD/openclaw-runtime/node_modules/acorn" \
-            node tools/check_bare_imports.js "$DEST"
+          echo "=== 强断言：扩展运行时依赖 ==="
+          node tools/check_plugin_deps.js "$DEST"
           # 清掉 npm 包里的点开头文件（.gitattributes/.gitignore/.npmignore/.package-lock.json 等）。
           # 2026-11-22 现场：清单 52414 条 / 包内 52417 个，唯独
           # node_modules/fast-uri/.gitattributes 没进包 —— aapt 对点开头的
