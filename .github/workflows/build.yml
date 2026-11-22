@@ -120,20 +120,23 @@ jobs:
       #    node_modules"），而扩展的依赖没装到包根 → 运行时
       #   MODULE_NOT_FOUND（现场：dist/client-Cm0jR4_W.js 找不到 @slack/web-api）。
       #
-      # 【修法】显式执行官方 postinstall。它自己会扫 dist/extensions/*/package.json
-      #   收集依赖并装到包根 node_modules。用它而不是自己写依赖收集逻辑，
-      #   是因为这是上游提供的正式机制，扩展增减它自己跟得上。
+      # 【修法】用 tools/install_plugin_deps.js：扫同一批扩展 manifest，但装到隔离目录
+      #   再合并进包根，避开 openclaw 自己的 devDependencies。
+      #   （3.6.0 试过直接跑上游脚本，碰上 oxlint 的 ERESOLVE 失败，见脚本头注释）
       - name: Install bundled plugin runtime deps
-        working-directory: openclaw-runtime/node_modules/openclaw
         run: |
           set -e
-          echo "=== 执行官方 postinstall：把扩展依赖装到包根 node_modules ==="
-          node scripts/postinstall-bundled-plugins.mjs
+          # 用自己写的脚本，不用上游的 postinstall —— 上游会在 openclaw 包目录跑 npm，
+          # 解析到 openclaw 自己的 devDependencies 而撞 ERESOLVE 失败，
+          # 而且它 catch 住只打 warn，set -e 拦不住（3.6.0 实测）。
+          # 本脚本在隔离目录装，完全不碰 openclaw 的 package.json。
+          NPM_PLATFORM_OS=linux NPM_PLATFORM_CPU=arm64 \
+            node tools/install_plugin_deps.js openclaw-runtime/node_modules/openclaw
           echo "=== 验证 @slack/web-api 已在包根 ==="
-          test -f node_modules/@slack/web-api/package.json \
+          test -f openclaw-runtime/node_modules/openclaw/node_modules/@slack/web-api/package.json \
             || { echo "✗ @slack/web-api 仍不在包根 node_modules"; exit 1; }
           echo "✓ @slack/web-api 就位"
-          du -sh node_modules
+          du -sh openclaw-runtime/node_modules
 
       - name: Repack runtime into App assets
         run: |
