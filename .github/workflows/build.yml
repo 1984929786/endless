@@ -175,7 +175,11 @@ jobs:
           # 清单必须和真实文件一致。注意：不能在这里排除点开头/下划线开头的文件，
           # 因为 app/build.gradle 已经把 aapt 的 ignoreAssetsPattern 改成了不忽略它们；
           # 两边必须一致，否则 App 校验时永远差一截。
-          ( cd "$DEST" && find . -type f | sed 's|^\./||' | sort ) > app/app/src/main/assets/openclaw/manifest.txt
+          # 【2026-11-22 修正】清单必须用「aapt 真实规则」过一遍再写。
+          # 上一版直接 find 全量，aapt 又按 ignoreAssetsPattern 丢掉一部分，
+          # 两边永远对不上 → App 释放后校验失败。现在生成时就用同一套规则过滤，
+          # 清单 = 包里应该有的文件，一一对应。
+          node tools/make_manifest.js "$DEST" app/app/src/main/assets/openclaw/manifest.txt app/app/build.gradle
           MANI=$(wc -l < app/app/src/main/assets/openclaw/manifest.txt)
           echo "清单条数：$MANI"
           test "$MANI" -gt 50000 || { echo "✗ 清单条数异常：$MANI"; exit 1; }
@@ -336,7 +340,10 @@ jobs:
           # 2026-11-22 血教训：在 run: | 里嵌 python heredoc 之后，GitHub 直接
           # 判定 workflow「没有 workflow_dispatch 触发器」，dispatch 一律 422，
           # 而 YAML 本身看起来又没错 —— 排查代价 = 几轮 15 分钟的构建。
-          node "$GITHUB_WORKSPACE/tools/apk_verify.js" "$APK"
+          # 第二个参数是 gradle 文件：apk_verify 从里面读 ignoreAssetsPattern，
+          # 用同一规则过滤清单，再和包内实际件比对。规则和打包必须同源。
+          node "$GITHUB_WORKSPACE/tools/apk_verify.js" "$APK" \
+               "$GITHUB_WORKSPACE/app/app/build.gradle"
 
       - name: Upload APK
         if: always()

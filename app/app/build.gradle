@@ -11,8 +11,8 @@ android {
         applicationId "com.xundao.yongwuzhijing"
         minSdk 26
         targetSdk 34
-        versionCode 44
-        versionName "3.2.7"
+        versionCode 45
+        versionName "3.2.8"
 
         ndk {
             abiFilters 'arm64-v8a'
@@ -44,14 +44,15 @@ android {
     }
 
     androidResources {
-        // 【2026-11-22 关键】AGP 默认的 ignoreAssetsPattern 里有 `<dir>_*` 和 `.*`，
-        // 会把 assets 里以 _ 或 . 开头的文件/目录静默丢弃。
-        // 现场后果：openclaw 运行时里 node_modules/openai/_vendor/ 76 个 js、
-        // discord 的 _interactions/ 152 个 js、@anthropic-ai/sdk 等全部没进 APK，
-        // 清单（52023 条）和包内（51350 条）差 673，App 永远校验不过。
-        // 这些是别人的 npm 包，不能改名 —— 只能把忽略规则拿掉，让 aapt 老实全部打包。
-        // 仍然保留真正无用的版本控制/系统垃圾文件过滤。
-        ignoreAssetsPattern '!.svn:!.git:!.ds_store:!*.scc:!CVS:!thumbs.db:!picasa.ini:!*~'
+        // 【最终写法 2026-11-22 04:40，三次修正后定稿】
+        // AGP 对 ignoreAssetsPattern 的处理不是「覆盖默认」：它以 `.<defaults>` 起手
+        // （DEFAULTS 里含 `.*` 和 `_*`），再按我们的 token 做集合增删。
+        // 因此想让 `_vendor/` `_generated_/` `.github/` 进包，必须显式把它们减掉。
+        // 注意不能写 `!.*` —— 那样连 .git 也一起保留；只写真正需要的三个前缀。
+        // 实测（本机 aapt 规则模拟 + 3.1.8 包内反查）：
+        //   旧写法 `'!.svn:...:!*~'` → 丢 840 条（_vendor 365 / _interactions 296 / 点目录 167）
+        //   本写法 → 丢 0 条
+        ignoreAssetsPattern '!_*:!.*:!.github:!*~:!.svn:!.git:!.ds_store:!*.scc:!CVS:!thumbs.db:!picasa.ini'
 
         // 模型权重不能被压缩，否则 AAPT 会改坏且解压耗时翻倍
         noCompress 'weights'

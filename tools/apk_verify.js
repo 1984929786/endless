@@ -13,6 +13,20 @@ const zlib = require('zlib');
 const apk = process.argv[2];
 const PREFIX = 'assets/openclaw/runtime/';
 const MANIFEST = 'assets/openclaw/manifest.txt';
+// aapt 实际生效的过滤规则，必须和 app/app/build.gradle 里 androidResources.ignoreAssetsPattern 一致。
+// 校验时用同一套规则把清单过滤一遍（= 「应该进包的文件」），再和包内实际件比对。
+// 这样即使 aapt 真丢了东西，报出来的也是「规则下应该有的却没在包里」，指向真实故障点。
+const GRADLE_FILE = process.argv[3] || 'app/app/build.gradle';
+function readPattern() {
+  try {
+    const g = fs.readFileSync(GRADLE_FILE, 'utf8');
+    const m = g.match(/ignoreAssetsPattern\s+'([^']*)'/);
+    return m ? m[1] : null;
+  } catch (_) { return null; }
+}
+// 规则实现集中在 tools/aapt_rule.js，和 make_manifest.js 共用同一份代码。
+// 两边规则一旦不同源，就会出现「清单说该有、包里没有」的死循环。
+const { isDropped, dropRules } = require('./aapt_rule.js');
 
 if (!apk) { console.log('用法: apk_verify.js <apk>'); process.exit(2); }
 
@@ -52,10 +66,17 @@ for (const en of entries) {
 }
 
 if (manifestRaw === null) { console.log('✗ APK 里没有 ' + MANIFEST); process.exit(1); }
-const mani = manifestRaw.split('\n').filter(x => x.trim());
+const maniAll = manifestRaw.split('\n').filter(x => x.trim());
+const pattern = readPattern();
+if (!pattern) { console.log('✗ 读不到 ignoreAssetsPattern（' + GRADLE_FILE + '），无法判定 aapt 规则'); process.exit(1); }
+console.log('aapt 丢弃规则: ' + (dropRules(pattern).map(x => x.source).join(' ') || '(无)'));
+// 清单本身应该已经是过滤后的结果；这里再过滤一次只是为了兼容旧清单
+const mani = maniAll.filter(x => !isDropped(x, pattern));
+const ignoredByAapt = maniAll.length - mani.length;
 const maniSet = new Set(mani);
 
-console.log('清单 ' + mani.length + ' 条 / 包内 runtime 文件 ' + inPkg.size + ' 个');
+console.log('清单 ' + maniAll.length + ' 条 / aapt 规则下应进包 ' + mani.length + ' 条（规则性跳过 ' +
+  ignoredByAapt + ' 条）/ 包内 runtime 文件 ' + inPkg.size + ' 个');
 
 const lack = [...maniSet].filter(x => !inPkg.has(x));
 const extra = [...inPkg].filter(x => !maniSet.has(x));
@@ -71,10 +92,13 @@ if (extra.length) {
 }
 
 // 回归断言：openai/_vendor 曾被 AGP 的 ignoreAssetsPattern 静默丢弃。
-// 注意别写死不存在的路径（2026-11-22 我把 discord 一个不存在的子目录当断言点），
-// 断言失败会白白烧掉一轮 15 分钟的构建。这里只验确实存在且曾被丢的那个。
 if (!entries.some(en => en.name.startsWith(PREFIX + 'node_modules/openai/_vendor/'))) {
-  console.log('✗ node_modules/openai/_vendor/ 被丢弃 —— ignoreAssetsPattern 未生效');
+  console.log('✗ node_modules/openai/_vendor/ 被丢弃 —— ignoreAssetsPattern 没生效');
   process.exit(1);
 }
-console.log('✓ 清单 ' + mani.length + ' 条全部在包内，_ 开头的目录也都在');
+// 回归断言：discord 的 _generated_ / _interactions 也曾整片消失
+if (!entries.some(en => en.name.includes('/discord-api-types/_generated_/'))) {
+  console.log('✗ discord-api-types/_generated_/ 被丢弃');
+  process.exit(1);
+}
+console.log('✓ 清单 ' + mani.length + ' 条全部在包内，_ / . 开头的目录也都在');
