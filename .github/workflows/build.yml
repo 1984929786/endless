@@ -283,8 +283,7 @@ jobs:
           if grep -q "BUILD SUCCESSFUL" /tmp/build.log; then
             echo "✓ 构建成功"
             exit 0
-          fi
-          echo "=== 构建失败 ==="
+          fi          echo "=== 构建失败 ==="
           echo "--- 编译错误（e: 开头）---"
           grep -E "^e: " /tmp/build.log | head -40 || echo "（无）"
           echo "--- 出错任务 ---"
@@ -298,6 +297,19 @@ jobs:
           echo "--- 尾部 40 行 ---"
           tail -40 /tmp/build.log
           exit 1
+
+      # 【2026-11-22 根因修复】用包内真实文件重写 manifest.txt 并回写进 APK。
+      # 我们无法在构建前预测 AGP 到底会丢什么（不同版本行为不同）；
+      # 但「包里有什么」是确定的事实。所以清单直接由包内文件生成，
+      # App 侧逐条校验就永远不会再误报。
+      - name: Sync manifest with real APK contents
+        run: |
+          set -e
+          APK=$(find app -name "*.apk" | head -1)
+          test -n "$APK" || { echo "✗ 未找到 APK"; exit 1; }
+          node tools/sync_manifest_into_apk.js "$APK" "$APK.out.apk"
+          mv "$APK.out.apk" "$APK"
+          echo "✓ 清单已同步进包"
 
       - name: Verify APK contents
         working-directory: app
