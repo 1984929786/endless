@@ -45,8 +45,28 @@ function collect(dir, rel, out) {
 const names = new Set();
 collect(root, '', names);
 console.log('需要改名的路径段: ' + names.size);
-if (names.size === 0) { console.log('没有以 _ 开头的路径段，无需处理'); process.exit(0); }
-for (const n of [...names]) console.log('  ' + n + ' -> ' + PREFIX + n);
+if (names.size === 0) {
+  // 【2026-11-22 第四次修正】不能直接 exit 0！
+  // 这一点是真实漏洞：如果上一轮改名完了但引用没改干净，
+  // 重跑时 find 不到 _ 开头目录 → 直接“无需处理”退出，
+  // 永远不会报错，永远不会重试，等于检查等于没。
+  // 正确做法：把「已知会被改过的名字」从目录里反推出来（AAA_ 前缀的去前缀），
+  // 再用它们跑一遍引用自检。
+  console.log('无待改名目录（可能已改过）；改用 AAA_ 前缀反推名单继续自检');
+  function collectRenamed(dir) {
+    for (const name of fs.readdirSync(dir)) {
+      const abs = path.join(dir, name);
+      const st = fs.lstatSync(abs);
+      if (name.startsWith(PREFIX) && name.length > PREFIX.length) names.add(name.slice(PREFIX.length));
+      if (st.isDirectory() && !st.isSymbolicLink()) collectRenamed(abs);
+    }
+  }
+  collectRenamed(root);
+  if (names.size === 0) { console.log('目录里没有 AAA_ 前缀条目，确实无需处理'); process.exit(0); }
+  console.log('反推得到 ' + names.size + ' 个已改名路径段，继续自检');
+} else {
+  for (const n of [...names]) console.log('  ' + n + ' -> ' + PREFIX + n);
+}
 
 // 第二遍：改名（先递归子目录，再改本层，避免父目录先改名导致子路径失效）
 function renameDeep(dir) {
@@ -76,6 +96,7 @@ const TEXT_EXT = new Set(['.js', '.mjs', '.cjs', '.json', '.map', '.ts', '.md', 
 let changed = 0;
 let scanned = 0;
 let replaced = 0;
+const writeFail = [];
 
 function isGlobContext(src, idx) {
   // idx 指向待替换名字的起始位置。往前看最近的字符：
@@ -134,7 +155,14 @@ function rewrite(dir) {
     try { src = fs.readFileSync(abs, 'utf8'); } catch (_) { continue; }
     const { out, n } = rewriteText(src, names);
     if (out !== src) {
-      fs.writeFileSync(abs, out);
+      try {
+        fs.writeFileSync(abs, out);
+      } catch (e) {
+        // 【2026-11-22】旧版直接崩掉报个堆栈，看不出是哪个文件、什么原因。
+        // 现在统一收集后汇报，让日志第一条就能定位。
+        writeFail.push(path.relative(root, abs) + ' :: ' + e.code);
+        continue;
+      }
       changed++;
       replaced += n;
     }
@@ -142,6 +170,11 @@ function rewrite(dir) {
 }
 rewrite(root);
 console.log('✓ 引用改写完成：扫描 ' + scanned + ' 个文件，改动 ' + changed + ' 个，替换 ' + replaced + ' 处');
+if (writeFail.length) {
+  console.log('✗ ' + writeFail.length + ' 个文件写入失败：');
+  for (const w of writeFail.slice(0, 10)) console.log('   ' + w);
+  process.exit(1);
+}
 
 // 自检一：目录里不该再有 _ 开头的路径段
 const left = new Set();
@@ -172,12 +205,17 @@ function scanRefs(dir) {
       const needle = '/' + nm;
       let idx = 0;
       while ((idx = src.indexOf(needle, idx)) !== -1) {
-        const prefixStart = idx - PREFIX.length;
-        const hasPrefix = prefixStart >= 0 && src.slice(prefixStart, idx) === PREFIX;
+        const nameStart = idx + 1;
+        const prefixStart = nameStart - PREFIX.length;
+        const hasPrefix = prefixStart >= 0 && src.slice(prefixStart, nameStart) === PREFIX;
         if (!hasPrefix) {
-          // 后面必须真的是路径段边界
-          const ac = src[idx + needle.length];
-          if (ac === '/' || ac === '"' || ac === "'" || ac === undefined) {
+          const ac = src[nameStart + nm.length];
+          const isPathEnd = ac === '/' || ac === '"' || ac === "'" || ac === undefined || ac === ',' || ac === '\n' || ac === ' ';
+          // 【2026-11-22 第三次修正】必须和 rewriteText 用同一个 glob 判据。
+          // `"!**/__fixtures__/**"` 里 __fixtures__ 前面确实是 `/`，
+          // 但再往前是 `**/` —— 那是 glob 模式，不是路径，不能报错。
+          // 上一版漏了这个双闸，导致 5 处误报、构建白白跑完 18 分钟。
+          if (isPathEnd && !isGlobContext(src, nameStart)) {
             dangling.push(path.relative(root, abs) + ' :: ' + src.slice(Math.max(0, idx - 30), idx + needle.length + 10).replace(/\n/g, ' '));
             break;
           }
