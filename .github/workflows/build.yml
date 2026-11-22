@@ -283,7 +283,8 @@ jobs:
           if grep -q "BUILD SUCCESSFUL" /tmp/build.log; then
             echo "✓ 构建成功"
             exit 0
-          fi          echo "=== 构建失败 ==="
+          fi
+          echo "=== 构建失败 ==="
           echo "--- 编译错误（e: 开头）---"
           grep -E "^e: " /tmp/build.log | head -40 || echo "（无）"
           echo "--- 出错任务 ---"
