@@ -21,17 +21,18 @@
 const fs = require('fs');
 const path = require('path');
 
-// 找 acorn。优先从 runtime 自己的 node_modules 找（部署后/CI 都在），
-// 其次从本脚本上级目录找，最后找工作目录的 node_modules。
+// 找 acorn。
+// YWZJ_ACORN_DIR 可直接指向 acorn 包目录（CI 现场：openclaw-runtime/node_modules/acorn）。
+// 否则按：root/node_modules/acorn → 本脚本上级几层 → 工作目录 → 全局。
 function loadAcorn(root) {
-  const cands = [
-    path.join(root, 'node_modules', 'acorn'),
-    path.join(__dirname, '..', 'node_modules', 'acorn'),
-    path.join(__dirname, '..', '..', 'node_modules', 'acorn'),
-    path.join(process.cwd(), 'node_modules', 'acorn'),
-  ];
-  for (const c of cands) {
-    try { return require(c); } catch (_) {}
+  const tries = [];
+  if (process.env.YWZJ_ACORN_DIR) tries.push(process.env.YWZJ_ACORN_DIR);
+  tries.push(path.join(root, 'node_modules', 'acorn'));
+  for (const b of [__dirname, path.join(__dirname, '..'), path.join(__dirname, '..', '..'), process.cwd()]) {
+    tries.push(path.join(b, 'node_modules', 'acorn'));
+  }
+  for (const t of tries) {
+    try { return require(t); } catch (_) {}
   }
   try { return require('acorn'); } catch (_) {}
   return null;
