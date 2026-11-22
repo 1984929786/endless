@@ -1,24 +1,23 @@
-// aapt 的 assets 过滤���则。
+// aapt 的 assets 过滤规则。
 //
-// ⚠️ 核心认知（2026-11-22 连续踩坑三次才定下来，别再"优化"这一段）：
+// ⚠️ 核心认知（2026-11-22 实测定论，与之前所有推测相反，请勿再改）：
 //
-//   `ignoreAssetsPattern` 里的 **`!xxx` 只能把内建默认规则「减掉」，不能新增模式**。
-//   而能减掉哪些，AGP 的实现只认这几条内建规则名。
-//   内建默认丢弃集：.svn .git .ds_store CVS thumbs.db picasa.ini *~ *.scc .* _*
+//   **`ignoreAssetsPattern` 里的 `!xxx` 放行写法对我们这个场景完全无效。**
 //
-//   实践结论（最稳的写法）：
-//   - 想要 `_vendor/` `_generated_/` `_stream_readable.js` 进包 → 必须写 `!_*`
-//   - 想要 `.github/` `.i18n/` `.buildstamp` 进包 → 必须写 `!.*`
-//   - 但一旦 `!.*` 生效，`.svn/` `.git/` `.npmignore` `.travis.yml` 也会一起进包
-//     （因为 `.*` 被打掉了）。这是**必须付的代价**，因为这些是别人的 npm 包，
-//     我们无法改名也无法单独过滤 —— 宁可 APK 多几 MB，也不能让运行时报缺文件。
+//   实测证据（不是推测）：
+//     build.gradle 写的是 '!_*:!.*:!.github:...'
+//     但 3.4.0 真实包内：以 '_' 开头的路径段 = 0 个，以 '.' 开头的路径段 = 0 个。
+//     如果 `!_*` / `!.*` 真能放行，这两个数不可能是 0。
 //
-//   所以最终判断逻辑就是三条：
-//     1. 计算「仍生效的默认丢弃规则」= DEFAULTS - (!x 里与默认规则名相同的那些)
-//     2. 再加上 pattern 里不带 ! 的额外丢弃规则
-//     3. 文件中任意一段（basename 或目录名）命中 → 丢
+//   所以内建默认丢弃集始终生效：
+//     .svn  .git  .ds_store  CVS  thumbs.db  picasa.ini  *~  *.scc  .*  _*
+//   凡是以 '.' 或 '_' 开头的路径段，都会被整棵子树丢弃。
 //
-// 本文件是唯一真源：make_manifest.js 用它生成清单，apk_verify.js 用它校验包。
+//   真正的对策不在打包器配置，而在「让文件不触发规则」：
+//     tools/ununderscore.js 把 `_vendor` 改名为 `AAA_vendor` 并改写引用。
+//     点开头的文件基本是 npm 配置（.npmignore/.gitignore），运行时不读，CI 里直接删。
+//
+//   本文件现在的职责：用**真实生效**的丢弃集生成清单，让清单与包内容一致。
 
 const DEFAULTS = ['.svn', '.git', '.ds_store', 'CVS', 'thumbs.db', 'picasa.ini',
   '*~', '*.scc', '.*', '_*'];
@@ -44,13 +43,16 @@ function parsePattern(pattern) {
   return { keep, drop };
 }
 
-/** 返回仍生效的丢弃正则列表 */
+/**
+ * 返回生效的丢弃正则列表。
+ * 【2026-11-22】实测结论：keep（!xxx）无效，一律不参与减法。
+ * 早期版本把 `!x` 当作「从 DEFAULTS 里减掉」，导致清单以为 _vendor 会进包，
+ * 而实际没进，两边永远对不上 —— 这也是清单一直「看起来一致」却启动失败的原因之一。
+ */
 function dropRules(pattern) {
-  const { keep, drop } = parsePattern(pattern);
-  const removed = new Set(keep.filter(k => DEFAULTS.includes(k)));
-  const out = [];
-  for (const d of DEFAULTS) if (!removed.has(d)) out.push(d);
-  for (const d of drop) if (!removed.has(d)) out.push(d);
+  const { drop } = parsePattern(pattern);
+  const out = [...DEFAULTS];
+  for (const d of drop) if (!out.includes(d)) out.push(d);
   return out.map(globToRe);
 }
 
@@ -71,14 +73,11 @@ if (require.main === module) {
   if (!m) { console.log('✗ 找不到 ignoreAssetsPattern'); process.exit(1); }
   const p = m[1];
   console.log('pattern:', p);
-  console.log('仍生效的丢弃规则:', dropRules(p).map(x => x.source).join(' ') || '(无)');
-  // 断言：项目真正依赖的运行时文件必须全部保留
+  console.log('生效的丢弃规则:', dropRules(p).map(x => x.source).join(' ') || '(无)');
+  // 断言：改名之后，运行时依赖的文件必须都不触发规则
   const mustKeep = [
-    'node_modules/openai/_vendor/zod-to-json-schema/index.js',
-    'node_modules/openai/src/_vendor/zod-to-json-schema/index.ts',
-    'dist/extensions/discord/node_modules/@buape/carbon/node_modules/discord-api-types/_generated_/rest/v10/interfaces.js',
-    'dist/extensions/discord/node_modules/@buape/carbon/node_modules/discord-api-types/payloads/v10/_interactions/_applicationCommands/_chatInput/base.js',
-    'node_modules/openai/node_modules/.bin/openai',
+    'node_modules/openai/AAA_vendor/zod-to-json-schema/index.js',
+    'node_modules/@anthropic-ai/sdk/AAA_vendor/partial-json-parser/parser.mjs',
     'dist/entry.js',
     'openclaw.mjs'
   ];

@@ -168,7 +168,23 @@ jobs:
           echo "已清理 node_modules 下的点开头文件与 .bin 目录"
 
           echo "=== 生成释放清单（App 侧逐条比对，防释放漏文件）==="
-          # 为什么要这个：2026-11-22 现场——APK 里 51351 个文件，App 只释放了 46885 个，
+          # 【2026-11-22 根本性修复】不再依赖 ignoreAssetsPattern 放行下划线目录。
+          # 实测证据：3.4.0 包内以 '_' 开头的路径段数量 = 0，以 '.' 开头的数量 = 0。
+          # 说明 `ignoreAssetsPattern '!_*:!.*'` 这两种放行写法 **完全无效**，
+          # aapt2 照样按内建默认集把它们丢掉。继续调 pattern 是死路。
+          #
+          # 后果（真实报错）：
+          #   Cannot find module '.../@anthropic-ai/sdk/_vendor/partial-json-parser/parser.mjs'
+          #   imported from '.../@anthropic-ai/sdk/internal/message-stream-utils.mjs'
+          # 网关进程启动即退。
+          #
+          # 对策：让文件本身不触发规则 —— 把 `_vendor` 这类目录改名为 `AAA_vendor`，
+          # 并同步替换 JS 里的引用。这样 aapt 没有任何理由丢弃它，
+          # 也不再依赖任何打包器配置。脚本自带两项自检（无残留下划线段 / 无漏改引用）。
+          echo "=== 把下划线开头的路径段改名（绕开 aapt 内建丢弃规则）==="
+          node tools/ununderscore.js "$DEST"
+
+          echo "=== 生成释放清单（App 侧逐条比对，防释放漏文件）==="
           # 但释放函数返回了「成功」。少掉的 4466 个里就有 @sinclair/typebox 之类关键包，
           # 于是 App 启动即报 Cannot find package。
           # 现在把完整清单烤进 assets，App 释放后逐条 File.exists() 比对，缺一个就重试。
@@ -369,6 +385,19 @@ jobs:
           unzip -l "$APK" | grep -q "assets/openclaw/runtime/openclaw.mjs" || { echo "✗ 缺 openclaw.mjs"; exit 1; }
           unzip -l "$APK" | grep -q "assets/openclaw/runtime/dist/index\.js" || { echo "✗ 缺 dist/index.js"; exit 1; }
           echo "✓ 网关运行时已打包"
+          # 【2026-11-22 关键断言】改名后的 _vendor 必须真的在包里。
+          # 这一条直接拦住真实报错：
+          #   Cannot find module '.../@anthropic-ai/sdk/_vendor/partial-json-parser/parser.mjs'
+          # 之前没有任何断言检查它，所以包少了这个目录也能一路绿灯到手机上。
+          echo "=== 强断言：改名后的 vendored 依赖 ==="
+          unzip -l "$APK" | grep -q "assets/openclaw/runtime/node_modules/@anthropic-ai/sdk/AAA_vendor/partial-json-parser/parser.mjs" || {
+            echo "✗ 缺 @anthropic-ai/sdk/AAA_vendor/partial-json-parser/parser.mjs"; exit 1; }
+          unzip -l "$APK" | grep -q "openai/AAA_vendor/" || { echo "✗ 缺 openai/AAA_vendor/"; exit 1; }
+          # 反向断言：包里不该再出现以 _ 开头的路径段（说明改名没做干净）
+          if unzip -l "$APK" | awk '{print $4}' | grep -E "(^|/)_." | grep -q .; then
+            echo "✗ 包内仍有下划线开头的路径段："; unzip -l "$APK" | awk '{print $4}' | grep -E "(^|/)_." | head -5; exit 1
+          fi
+          echo "✓ vendored 依赖齐全，无残留下划线路径"
           if unzip -l "$APK" | grep -q "\.so"; then echo "✓ native 库已打包"; else echo "✗ 缺 .so"; exit 1; fi
           # 原生库命名必须和 Kotlin 侧候选对得上。
           # 2026-11-21 教训：CI 把 libsqlite3.so.3.54.1 改名成 libsqlite33.so，

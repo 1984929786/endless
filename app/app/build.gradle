@@ -11,8 +11,8 @@ android {
         applicationId "com.xundao.yongwuzhijing"
         minSdk 26
         targetSdk 34
-        versionCode 48
-        versionName "3.4.0"
+        versionCode 49
+        versionName "3.5.0"
 
         ndk {
             abiFilters 'arm64-v8a'
@@ -49,14 +49,17 @@ android {
     }
 
     androidResources {
-        // 【最终写法 2026-11-22 04:40，三次修正后定稿】
-        // AGP 对 ignoreAssetsPattern 的处理不是「覆盖默认」：它以 `.<defaults>` 起手
-        // （DEFAULTS 里含 `.*` 和 `_*`），再按我们的 token 做集合增删。
-        // 因此想让 `_vendor/` `_generated_/` `.github/` 进包，必须显式把它们减掉。
-        // 注意不能写 `!.*` —— 那样连 .git 也一起保留；只写真正需要的三个前缀。
-        // 实测（本机 aapt 规则模拟 + 3.1.8 包内反查）：
-        //   旧写法 `'!.svn:...:!*~'` → 丢 840 条（_vendor 365 / _interactions 296 / 点目录 167）
-        //   本写法 → 丢 0 条
+        // 【2026-11-22 实测定论，别再按旧注释改】
+        // 这里的 `!xxx` 放行写法对本项目 **完全无效**：实测 3.4.0 包内以 '_' 开头的
+        // 路径段 = 0 个，以 '.' 开头的路径段 = 0 个。aapt2 始终按内建默认集丢弃：
+        //   .svn .git .ds_store CVS thumbs.db picasa.ini *~ *.scc .* _*
+        //
+        // 所以真正的对策是让文件不触发规则（CI 里做两件事）：
+        //   1. tools/ununderscore.js：`_vendor` → `AAA_vendor`，并改写 JS 引用
+        //   2. find -name '.*' -delete：点开头文件都是 npm 配置，运行时不读，直接删
+        //
+        // 下面这一行保留现状：它不生效，但也不造成伤害，改成别的也不会生效。
+        // 如果哪天真要调整，必须用「包内反查」验证，不能靠读源码猜。
         ignoreAssetsPattern '!_*:!.*:!.github:!*~:!.svn:!.git:!.ds_store:!*.scc:!CVS:!thumbs.db:!picasa.ini'
 
         // 模型权重不能被压缩，否则 AAPT 会改坏且解压耗时翻倍
