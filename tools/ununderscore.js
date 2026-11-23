@@ -28,7 +28,7 @@ const root = process.argv[2];
 if (!root) { console.log('用法: ununderscore.js <runtime目录>'); process.exit(2); }
 if (!fs.existsSync(root)) { console.log('✗ 目录不存在: ' + root); process.exit(1); }
 
-// ── 定位 acorn ────────────────────────────────────────────────
+// ── 定位 acorn（仅自检二用，拿不到就降级）──────────────────
 // 【2026-11-23】不能用相对 root 的路径，CI 里 root 是 assets/runtime，acorn 在别处。
 // 按优先级：环境变量 > root 下 > 从脚本自身向上逐层找 node_modules/acorn。
 function loadAcorn() {
@@ -47,15 +47,21 @@ function loadAcorn() {
   }
   return null;
 }
-const acorn = loadAcorn();
+// ── 字符串区间扫描（自写词法器，不依赖任何第三方库）────────────
+// 【2026-11-23】不能用 acorn：CI 里 acorn 不在 node_modules（openclaw 并不直接依赖它，
+// 本机只是恰好有）。为一个改名脚本去 npm install acorn = 给构建加新依赖 = 新的失败点。
+const { stringRanges } = require(path.join(__dirname, 'jsstrings.js'));
+const acorn = loadAcorn(); // 仅用于「自检二」的标识符审计，可选
 
 // ── 标识符污染审计（自检二）─────────────────────────────────────
 // 3.7.0 就是因为 `AAA_instanceof` 这种「标识符被当路径改」而整个模块链崩。
-// 只要 AA_ 出现在 Identifier 位置，就说明有代码语义被破坏。
+// 优先用 acorn 扫 Identifier（最精确）；拿不到 acorn 时，
+// 用自写词法器反推：找「不在字符串区间内、但形如 AAA_xxx」的 token。
+// 两条路都能拦住本次这个 bug。
 const identHits = [];
 function runIdentAudit(rt) {
   identHits.length = 0;
-  if (!acorn) { console.log('⚠ 找不到 acorn，跳过标识符审计'); return true; }
+  const IDENT_RE = new RegExp('(^|[^A-Za-z0-9_$])' + PREFIX + '_[A-Za-z0-9_$]*', 'g');
   function scan(dir) {
     for (const name of fs.readdirSync(dir)) {
       const abs = path.join(dir, name);
@@ -68,21 +74,36 @@ function runIdentAudit(rt) {
       let src;
       try { src = fs.readFileSync(abs, 'utf8'); } catch (_) { continue; }
       if (!src.includes(PREFIX + '_')) continue;
-      let ast;
-      try { ast = acorn.parse(src, { ecmaVersion: 'latest', sourceType: 'module', allowHashBang: true }); }
-      catch (_) { continue; }
-      (function walk(node) {
-        if (!node || typeof node !== 'object') return;
-        if (Array.isArray(node)) { for (const c of node) walk(c); return; }
-        if (node.type === 'Identifier' && typeof node.name === 'string' && node.name.startsWith(PREFIX + '_')) {
-          identHits.push(path.relative(rt, abs) + ' :: 标识符 ' + node.name);
+
+      if (acorn) {
+        let ast;
+        try { ast = acorn.parse(src, { ecmaVersion: 'latest', sourceType: 'module', allowHashBang: true }); }
+        catch (_) { continue; }
+        (function walk(node) {
+          if (!node || typeof node !== 'object') return;
+          if (Array.isArray(node)) { for (const c of node) walk(c); return; }
+          if (node.type === 'Identifier' && typeof node.name === 'string' && node.name.startsWith(PREFIX + '_')) {
+            identHits.push(path.relative(rt, abs) + ' :: 标识符 ' + node.name);
+          }
+          for (const k in node) {
+            if (k === 'start' || k === 'end') continue;
+            const v = node[k];
+            if (v && typeof v === 'object') walk(v);
+          }
+        })(ast);
+      } else {
+        // 词法降级：在「代码区」找 AAA_ 开头的 token
+        const ranges = stringRanges(src);
+        const inString = (pos) => ranges.some(r => pos >= r.start && pos < r.end);
+        IDENT_RE.lastIndex = 0;
+        let m;
+        while ((m = IDENT_RE.exec(src)) !== null) {
+          const pos = m.index + m[1].length;
+          if (!inString(pos)) {
+            identHits.push(path.relative(rt, abs) + ' :: 代码区出现 ' + m[0].slice(m[1].length));
+          }
         }
-        for (const k in node) {
-          if (k === 'start' || k === 'end') continue;
-          const v = node[k];
-          if (v && typeof v === 'object') walk(v);
-        }
-      })(ast);
+      }
       if (identHits.length > 20) return;
     }
   }
@@ -92,7 +113,7 @@ function runIdentAudit(rt) {
     for (const h of identHits.slice(0, 10)) console.log('   ' + h);
     return false;
   }
-  console.log('✓ 自检二通过：无代码标识符被误改名');
+  console.log('✓ 自检二通过：无代码标识符被误改名' + (acorn ? '（AST）' : '（词法）'));
   return true;
 }
 
@@ -108,14 +129,6 @@ function collect(dir, out) {
 const names = new Set();
 collect(root, names);
 console.log('需要改名的路径段: ' + names.size);
-
-// 【2026-11-23】acorn 检查必须放在改名之前。
-// 旧顺序是「先改名 → 再报找不到 acorn」，CI 上会留下半改名的目录。
-if (names.size > 0 && !acorn) {
-  console.log('✗ 找不到 acorn，拒绝用文本替换处理 JS（那正是 3.7.0 崩掉的原因）');
-  console.log('  解决：设置 ACORN_PATH 指向 acorn 目录，或把 acorn 装到 runtime/node_modules');
-  process.exit(1);
-}
 
 if (names.size === 0) {
   // 幂等重跑：从 AAA_ 反推名单，继续做引用自检。
@@ -195,51 +208,17 @@ function replaceInString(s, names) {
   return { out, n };
 }
 
-// ── AST 路线：只碰 Literal / TemplateElement 节点 ─────────────
-function rewriteWithAst(src, names) {
-  const ast = acorn.parse(src, {
-    ecmaVersion: 'latest',
-    sourceType: 'module',
-    allowHashBang: true,
-  });
-  const edits = [];
+// ── JS 路线：只改字符串区间，代码和注释碰不到 ───────────────
+function rewriteJs(src, names) {
+  const ranges = stringRanges(src);
+  if (!ranges.length) return { out: src, n: 0 };
   let n = 0;
-  (function walk(node) {
-    if (!node || typeof node !== 'object') return;
-    if (Array.isArray(node)) { for (const c of node) walk(c); return; }
-    const t = node.type;
-    if ((t === 'Literal' || t === 'StringLiteral') && typeof node.value === 'string' && node.start != null) {
-      // 取原始源码片段，避免 value 与 raw 转义不一致
-      const raw = src.slice(node.start, node.end);
-      const quote = raw[0];
-      if (quote === '"' || quote === "'") {
-        const inner = raw.slice(1, -1);
-        const { out, n: k } = replaceInString(inner, names);
-        if (k > 0) {
-          edits.push([node.start + 1, node.end - 1, out]);
-          n += k;
-        }
-      }
-    } else if (t === 'TemplateElement' && typeof node.value?.cooked === 'string' && node.start != null) {
-      const { out, n: k } = replaceInString(node.value.cooked, names);
-      if (k > 0) {
-        // TemplateElement 的 start/end 覆盖 raw 内容（含 ` 或 }）之外的部分，
-        // 直接用 node.value.raw 的偏移更稳：使用 start + 1 跳过反引号/花括号边界不成立，
-        // 因此这里改用 raw 定位。
-        const raw = node.value.raw;
-        const { out: outRaw, n: k2 } = replaceInString(raw, names);
-        if (k2 > 0) {
-          edits.push([node.start, node.end, outRaw]);
-          n += k2;
-        }
-      }
-    }
-    for (const k in node) {
-      if (k === 'start' || k === 'end' || k === 'value' || k === 'raw') continue;
-      const v = node[k];
-      if (v && typeof v === 'object') walk(v);
-    }
-  })(ast);
+  const edits = [];
+  for (const r of ranges) {
+    const inner = src.slice(r.start, r.end);
+    const { out, n: k } = replaceInString(inner, names);
+    if (k > 0) { edits.push([r.start, r.end, out]); n += k; }
+  }
   if (!edits.length) return { out: src, n: 0 };
   edits.sort((a, b) => b[0] - a[0]);
   let out = src;
@@ -292,17 +271,9 @@ function rewrite(dir) {
     try { src = fs.readFileSync(abs, 'utf8'); } catch (_) { continue; }
     let out, n;
     const isJs = ext === '.js' || ext === '.mjs' || ext === '.cjs' || ext === '.ts' || name.endsWith('.d.ts');
-    if (isJs && acorn) {
-      try {
-        const r = rewriteWithAst(src, names);
-        out = r.out; n = r.n; astUsed++;
-      } catch (e) {
-        // 解析失败不能静默退回文本（那正是本次 bug 的来源）。
-        // 记下来，最后统一报，让构建失败而不是产出坏包。
-        parseFail++;
-        parseFailFiles.push(path.relative(root, abs) + ' :: ' + e.message.slice(0, 90));
-        continue;
-      }
+    if (isJs) {
+      const r = rewriteJs(src, names);
+      out = r.out; n = r.n; astUsed++;
     } else {
       const r = rewriteWithText(src, names);
       out = r.out; n = r.n;
@@ -316,8 +287,7 @@ function rewrite(dir) {
 }
 
 if (!acorn && names.size) {
-  console.log('✗ 找不到 acorn，拒绝用文本替换处理 JS（那正是 3.7.0 崩掉的原因）');
-  process.exit(1);
+  console.log('⚠ 自检二（标识符审计）无法用 AST，改用词法区间反推');
 }
 
 rewrite(root);

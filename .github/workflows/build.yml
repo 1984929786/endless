@@ -235,14 +235,11 @@ jobs:
           # 并同步替换 JS 里的引用。这样 aapt 没有任何理由丢弃它，
           # 也不再依赖任何打包器配置。脚本自带两项自检（无残留下划线段 / 无漏改引用）。
           echo "=== 把下划线开头的路径段改名（绕开 aapt 内建丢弃规则）==="
-          # 【2026-11-23】acorn 必须在改名之前找到：文本替换会把
-          # `function _instanceof()` 这类代码标识符当成路径段改坏，导致
-          # `Export 'AAA_instanceof' is not defined` 整个模块链崩。
-          # 这里显式把路径交给脚本，不依赖它在 DEST 下自己找。
-          test -d "$GITHUB_WORKSPACE/openclaw-runtime/node_modules/acorn" \
-            || { echo "✗ acorn 不在 openclaw-runtime/node_modules，拒绝文本替换改名"; exit 1; }
-          ACORN_PATH="$GITHUB_WORKSPACE/openclaw-runtime/node_modules/acorn" \
-            node tools/ununderscore.js "$DEST"
+          # 【2026-11-23】改名必须只碰「字符串里的路径」，不能碰代码标识符。
+          # 旧实现用文本替换，把 `function _instanceof()` 改成了 `AAA_instanceof`，
+          # 导致 `Export 'AAA_instanceof' is not defined`，整个 ESM 链崩。
+          # 新实现自带词法扫描器（tools/jsstrings.js），不依赖 acorn，四道自检全开。
+          node tools/ununderscore.js "$DEST"
 
           echo "=== 生成释放清单（App 侧逐条比对，防释放漏文件）==="
           # 但释放函数返回了「成功」。少掉的 4466 个里就有 @sinclair/typebox 之类关键包，
