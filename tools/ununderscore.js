@@ -317,37 +317,58 @@ console.log('✓ 自检一通过：无 _ 开头路径段');
 if (!runIdentAudit(root)) process.exit(1);
 
 // ── 自检三：不能有漏改的真实路径引用 ─────────────────────────
+// 【2026-11-23】必须和改写用同一套判据：只在「字符串区间」内找。
+// 旧版全文件搜 /_name，把注释里、以及 readable-stream/lib/_stream_duplex.js
+// 这种「不是路径段而是模块名一部分」的东西全报了 30 处误报。
 const dangling = [];
 function scanRefs(dir) {
+  const REF_EXT = new Set(['.js', '.mjs', '.cjs', '.json']);
+  function check(file, src, isJs) {
+    // 候选：字面上出现 /_name（name 在前面的 names 里）
+    const hits = [];
+    for (const nm of names) {
+      const needle = '/' + nm;
+      let idx = 0;
+      while ((idx = src.indexOf(needle, idx)) !== -1) {
+        hits.push({ idx, nameStart: idx + 1, nm });
+        idx += needle.length;
+      }
+    }
+    if (!hits.length) return;
+    // 取所有「可改区间」：JS 用字符串区间；非 JS 整文件
+    let ranges = null;
+    if (isJs) { try { ranges = stringRanges(src); } catch (_) { ranges = null; } }
+    const inRange = (pos) => {
+      if (!ranges) return true;              // 非 JS：不区分
+      return ranges.some(r => pos >= r.start && pos < r.end);
+    };
+    for (const h of hits) {
+      const nameStart = h.nameStart;
+      if (!inRange(nameStart)) continue;     // 不在字符串里 = 不是真实路径
+      const prefixStart = nameStart - PREFIX.length;
+      const hasPrefix = prefixStart >= 0 && src.slice(prefixStart, nameStart) === PREFIX;
+      if (hasPrefix) continue;               // 已经改过
+      if (isGlobContext(src, nameStart)) continue;
+      const ac = src[nameStart + h.nm.length];
+      if (ac === '/' || ac === '"' || ac === "'" || ac === undefined || ac === ',' || ac === '\n' || ac === ' ') {
+        dangling.push(file + ' :: ' + src.slice(Math.max(0, h.idx - 30), h.idx + h.nm.length + 12).replace(/\n/g, ' '));
+        break;
+      }
+    }
+  }
   for (const name of fs.readdirSync(dir)) {
     const abs = path.join(dir, name);
     const st = fs.lstatSync(abs);
     if (st.isDirectory()) { scanRefs(abs); continue; }
     if (!st.isFile()) continue;
     const ext = path.extname(name).toLowerCase();
-    if (!['.js', '.mjs', '.cjs', '.json'].includes(ext)) continue;
+    if (!REF_EXT.has(ext)) continue;
     if (st.size > 8 * 1024 * 1024) continue;
     let src;
     try { src = fs.readFileSync(abs, 'utf8'); } catch (_) { continue; }
-    // 只查字符串里出现的 /_name 形态
-    for (const nm of names) {
-      const needle = '/' + nm;
-      let idx = 0;
-      while ((idx = src.indexOf(needle, idx)) !== -1) {
-        const nameStart = idx + 1;
-        const prefixStart = nameStart - PREFIX.length;
-        const hasPrefix = prefixStart >= 0 && src.slice(prefixStart, nameStart) === PREFIX;
-        if (!hasPrefix && !isGlobContext(src, nameStart)) {
-          const ac = src[nameStart + nm.length];
-          if (ac === '/' || ac === '"' || ac === "'" || ac === undefined || ac === ',' || ac === '\n' || ac === ' ') {
-            dangling.push(path.relative(root, abs) + ' :: ' + src.slice(Math.max(0, idx - 30), idx + needle.length + 10).replace(/\n/g, ' '));
-            break;
-          }
-        }
-        idx += needle.length;
-      }
-      if (dangling.length > 30) break;
-    }
+    const isJs = ext === '.js' || ext === '.mjs' || ext === '.cjs';
+    check(path.relative(root, abs), src, isJs);
+    if (dangling.length > 30) return;
   }
 }
 scanRefs(root);
