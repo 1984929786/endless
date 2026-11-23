@@ -185,6 +185,16 @@ const writeFail = [];
 const parseFailFiles = [];
 
 // 在单个字符串值内替换路径段
+// 【2026-11-23】判断边界时必须允许「后面跟点」：
+// `_stream_duplex.js` 这种「下划线开头的**文件名**」，它在引用里形如
+// `/lib/_stream_duplex.js` → 名字后面紧接 `.` 而不是 `/`。
+// 旧判据只允许 `/` 或字符串结尾，结果 448 个路径段里有 5 个带扩展名的
+// （_stream_duplex / _stream_readable / _arx / _md / _u64 等）永远改不到，
+// 而对应文件已经改名 → require 找不到模块。
+//
+// 注意：允许 `.` 会不会误伤？考虑 `"lib/_foo.bar()"` 这种代码字符串。
+// 我们的名字集来自实际文件名（含扩展名），如 `_foo.js`；
+// `_foo` 单独不会在集合里，所以不会误匹配。安全。
 function replaceInString(s, names) {
   let n = 0;
   let out = s;
@@ -195,7 +205,7 @@ function replaceInString(s, names) {
       const before = idx === 0 ? '' : out[idx - 1];
       const after = out[idx + needle.length];
       const okBefore = idx === 0 || before === '/';
-      const okAfter = after === undefined || after === '/';
+      const okAfter = after === undefined || after === '/' || after === '.';
       if (okBefore && okAfter) {
         out = out.slice(0, idx) + PREFIX + out.slice(idx);
         idx += PREFIX.length + needle.length;
@@ -350,7 +360,7 @@ function scanRefs(dir) {
       if (hasPrefix) continue;               // 已经改过
       if (isGlobContext(src, nameStart)) continue;
       const ac = src[nameStart + h.nm.length];
-      if (ac === '/' || ac === '"' || ac === "'" || ac === undefined || ac === ',' || ac === '\n' || ac === ' ') {
+      if (ac === '/' || ac === '.' || ac === '"' || ac === "'" || ac === undefined || ac === ',' || ac === '\n' || ac === ' ') {
         dangling.push(file + ' :: ' + src.slice(Math.max(0, h.idx - 30), h.idx + h.nm.length + 12).replace(/\n/g, ' '));
         break;
       }
