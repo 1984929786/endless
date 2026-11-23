@@ -185,33 +185,35 @@ const writeFail = [];
 const parseFailFiles = [];
 
 // 在单个字符串值内替换路径段
-// 【2026-11-23】判断边界时必须允许「后面跟点」：
-// `_stream_duplex.js` 这种「下划线开头的**文件名**」，它在引用里形如
-// `/lib/_stream_duplex.js` → 名字后面紧接 `.` 而不是 `/`。
-// 旧判据只允许 `/` 或字符串结尾，结果 448 个路径段里有 5 个带扩展名的
-// （_stream_duplex / _stream_readable / _arx / _md / _u64 等）永远改不到，
-// 而对应文件已经改名 → require 找不到模块。
+// 【2026-11-23】边界判据经历了两次修正，都是同一根因：
+//   判据只想到了「目录名」（前后都是 /），没想到「带扩展名的文件名」。
+//   ① `_stream_duplex.js` 在 `/lib/_stream_duplex.js` 里：名字后面是 "."，不是 "/"
+//   ② 作为整个字符串时：`require('.../_stream_duplex.js')` 名字后面直接是字符串结尾
+//      这个已被 after===undefined 覆盖；但如果是 `"a/_x.js,b"` 则后面是 ","。
+// 所以这里把所有「路径分隔符类」字符都认了：/ . " ' ` , ; ) ] } 空白 结尾
 //
-// 注意：允许 `.` 会不会误伤？考虑 `"lib/_foo.bar()"` 这种代码字符串。
-// 我们的名字集来自实际文件名（含扩展名），如 `_foo.js`；
-// `_foo` 单独不会在集合里，所以不会误匹配。安全。
+// 【为什么允许 "." 不会误伤】names 里的名字来自真实文件名/目录名，
+// 如 `_vendor`、`_stream_duplex.js`。它们都带足够特异性，
+// 不会碰见于普通的属性访问（那不在字符串里，根本走不到这里）。
+const PATH_END_OK = (ch) => ch === undefined || ch === '/' || ch === '.' ||
+  ch === '"' || ch === "'" || ch === '`' || ch === ',' || ch === ';' ||
+  ch === ')' || ch === ']' || ch === '}' || ch === ' ' || ch === '\t' ||
+  ch === '\n' || ch === '\r' || ch === '?' || ch === '#';
 function replaceInString(s, names) {
   let n = 0;
   let out = s;
   for (const nm of names) {
     let idx = 0;
-    const needle = nm;
-    while ((idx = out.indexOf(needle, idx)) !== -1) {
+    while ((idx = out.indexOf(nm, idx)) !== -1) {
       const before = idx === 0 ? '' : out[idx - 1];
-      const after = out[idx + needle.length];
+      const after = out[idx + nm.length];
       const okBefore = idx === 0 || before === '/';
-      const okAfter = after === undefined || after === '/' || after === '.';
-      if (okBefore && okAfter) {
+      if (okBefore && PATH_END_OK(after)) {
         out = out.slice(0, idx) + PREFIX + out.slice(idx);
-        idx += PREFIX.length + needle.length;
+        idx += PREFIX.length + nm.length;
         n++;
       } else {
-        idx += needle.length;
+        idx += nm.length;
       }
     }
   }
@@ -360,7 +362,7 @@ function scanRefs(dir) {
       if (hasPrefix) continue;               // 已经改过
       if (isGlobContext(src, nameStart)) continue;
       const ac = src[nameStart + h.nm.length];
-      if (ac === '/' || ac === '.' || ac === '"' || ac === "'" || ac === undefined || ac === ',' || ac === '\n' || ac === ' ') {
+      if (ac === '/' || ac === '.' || ac === '"' || ac === "'" || ac === '`' || ac === undefined || ac === ',' || ac === ';' || ac === ')' || ac === ']' || ac === '}' || ac === '\n' || ac === '\r' || ac === ' ' || ac === '\t' || ac === '?' || ac === '#') {
         dangling.push(file + ' :: ' + src.slice(Math.max(0, h.idx - 30), h.idx + h.nm.length + 12).replace(/\n/g, ' '));
         break;
       }
