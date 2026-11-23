@@ -29,11 +29,19 @@ if (!root) { console.log('用法: ununderscore.js <runtime目录>'); process.exi
 if (!fs.existsSync(root)) { console.log('✗ 目录不存在: ' + root); process.exit(1); }
 
 // ── 定位 acorn ────────────────────────────────────────────────
+// 【2026-11-23】不能用相对 root 的路径，CI 里 root 是 assets/runtime，acorn 在别处。
+// 按优先级：环境变量 > root 下 > 从脚本自身向上逐层找 node_modules/acorn。
 function loadAcorn() {
-  const cands = [
-    path.join(root, 'node_modules/acorn'),
-    '/data/data/com.xundao.openclaw/files/runtime/openclaw/node_modules/acorn',
-  ];
+  const cands = [];
+  if (process.env.ACORN_PATH) cands.push(process.env.ACORN_PATH);
+  cands.push(path.join(root, 'node_modules/acorn'));
+  let d = __dirname;
+  for (let i = 0; i < 8; i++) {
+    cands.push(path.join(d, 'node_modules/acorn'));
+    const up = path.dirname(d);
+    if (up === d) break;
+    d = up;
+  }
   for (const c of cands) {
     try { return require(c); } catch (_) {}
   }
@@ -100,6 +108,14 @@ function collect(dir, out) {
 const names = new Set();
 collect(root, names);
 console.log('需要改名的路径段: ' + names.size);
+
+// 【2026-11-23】acorn 检查必须放在改名之前。
+// 旧顺序是「先改名 → 再报找不到 acorn」，CI 上会留下半改名的目录。
+if (names.size > 0 && !acorn) {
+  console.log('✗ 找不到 acorn，拒绝用文本替换处理 JS（那正是 3.7.0 崩掉的原因）');
+  console.log('  解决：设置 ACORN_PATH 指向 acorn 目录，或把 acorn 装到 runtime/node_modules');
+  process.exit(1);
+}
 
 if (names.size === 0) {
   // 幂等重跑：从 AAA_ 反推名单，继续做引用自检。
@@ -303,6 +319,7 @@ if (!acorn && names.size) {
   console.log('✗ 找不到 acorn，拒绝用文本替换处理 JS（那正是 3.7.0 崩掉的原因）');
   process.exit(1);
 }
+
 rewrite(root);
 console.log('✓ 引用改写完成：扫描 ' + scanned + ' 个文件，改动 ' + changed + ' 个，替换 ' + replaced + ' 处'
   + (acorn ? '（AST 处理 ' + astUsed + ' 个 JS）' : ''));
