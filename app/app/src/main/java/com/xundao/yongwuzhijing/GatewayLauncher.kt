@@ -495,8 +495,21 @@ class GatewayLauncher(private val ctx: Context) {
             env["TMPDIR"] = ctx.cacheDir.absolutePath
             // 不设 PATH 时部分子进程查找命令会失败；给一个最小 PATH
             if (env["PATH"] == null) env["PATH"] = "/system/bin:/system/xbin"
+            // 【2026-11-23 自诊断】spawn 之前先确认 node 自己能不能起来。
+            // 之前所有失败都表现为「40 秒端口不通」，真实 stderr 全在 gateway.log 里、
+            // 界面看不到，据此排查连续误判 8 轮。现在把 node 的版本/错误直接摆到界面上。
+            val selfCheck = nodeSelfCheck(node)
+            startSteps.add(selfCheck)
+            Boot.trace(ctx, "node 自检: $selfCheck")
+            if (!selfCheck.startsWith("node ok")) {
+                lastError = "node 自检失败: $selfCheck"
+                Boot.trace(ctx, lastError)
+                return false
+            }
+
             pb.redirectErrorStream(true)
             val logFile = File(root, "gateway.log")
+            val logStart = try { logFile.length() } catch (_: Throwable) { 0L }
             pb.redirectOutput(ProcessBuilder.Redirect.appendTo(logFile))
             val p = pb.start()
             proc = p
@@ -506,9 +519,11 @@ class GatewayLauncher(private val ctx: Context) {
             // 等最多 40 秒看端口是否起来
             val ok = waitPort(40_000)
             if (!ok) {
-                lastError = "网关启动后 40 秒端口仍不通"
-                // 关键：进程可能启动即死（如 node 报错退出），把这个信号告诉界面
+                // 【2026-11-23 自诊断】把这次启动新写入的日志尾部捞进界面。
+                // 「端口不通」只是症状，node 打的那几行才是根因。
                 val died = try { !p.isAlive } catch (_: Throwable) { false }
+                val tail = tailOf(logFile, logStart, 25)
+                lastError = (if (died) "进程已退出" else "端口超时") + " | node 输出: " + tail
                 startSteps.add(if (died) "进程已退出" else "端口超时")
                 Boot.trace(ctx, lastError)
             } else {
@@ -565,6 +580,57 @@ class GatewayLauncher(private val ctx: Context) {
             File(root, "gateway.log").appendText(sb.toString())
         } catch (t: Throwable) {
             Boot.trace(ctx, "diag 失败: ${t.message}")
+        }
+    }
+
+    /**
+     * 【2026-11-23 新增】node 自检：真把 libnode.so 跑起来，报告版本或错误。
+     *
+     * 为什么必须做：App 之前只判断「40 秒端口不通」，node 是死了还是慢了、
+     * 缺库还是语法错，全都看不见。8 轮排查里有 6 轮是在猜这个。
+     * 这里用和 spawn 完全相同的 LD_LIBRARY_PATH 跑一句最简单的 JS，
+     * 能跑通 → node 和它的动态库都没问题；跑不通 → 把真实 stderr 交出去。
+     */
+    private fun nodeSelfCheck(node: File): String {
+        return try {
+            val nativeDir = ctx.applicationInfo.nativeLibraryDir
+            val pb = ProcessBuilder(node.absolutePath, "-e", "process.stdout.write(process.version)")
+            pb.redirectErrorStream(true)
+            val env = pb.environment()
+            env["LD_LIBRARY_PATH"] = "${libDir.absolutePath}:$nativeDir"
+            env["HOME"] = home.absolutePath
+            env["TMPDIR"] = ctx.cacheDir.absolutePath
+            if (env["PATH"] == null) env["PATH"] = "/system/bin:/system/xbin"
+            val p = pb.start()
+            val done = p.waitFor(15, java.util.concurrent.TimeUnit.SECONDS)
+            if (!done) { try { p.destroyForcibly() } catch (_: Throwable) { }; return "node 超时(15s)" }
+            val out = p.inputStream.bufferedReader().use { it.readText() }.trim()
+            if (p.exitValue() == 0 && out.startsWith("v")) "node ok $out"
+            else "exit=${p.exitValue()} ".plus(out.replace("\n", " ").take(400))
+        } catch (t: Throwable) {
+            "异常 ${t.javaClass.simpleName}: ${t.message}"
+        }
+    }
+
+    /** 读日志文件从 fromOffset 开始的新内容，取最后 n 行，压成一行给界面看 */
+    private fun tailOf(f: File, fromOffset: Long, n: Int): String {
+        return try {
+            if (!f.isFile) return "(无日志)"
+            val len = f.length()
+            if (len <= fromOffset) return "(本次无输出)"
+            val start = maxOf(fromOffset, len - 64 * 1024)
+            val bytes = ByteArray((len - start).toInt())
+            java.io.RandomAccessFile(f, "r").use { raf ->
+                raf.seek(start)
+                raf.readFully(bytes)
+            }
+            val text = String(bytes, Charsets.UTF_8)
+                .replace(Regex("[\\u001B][\\[][0-9;]*m"), "")
+            val lines = text.split('\n').filter { it.isNotBlank() }
+            if (lines.isEmpty()) return "(本次无输出)"
+            lines.takeLast(n).joinToString(" ⏎ ").take(900)
+        } catch (t: Throwable) {
+            "(读日志失败: ${t.message})"
         }
     }
 
