@@ -173,7 +173,15 @@ object AgentClient {
         activePort = -1
     }
 
-    /** 快速探活：网关在不在。3 秒超时，失败不打日志噪音。 */
+    /**
+     * 快速探活：网关在不在，**并且能不能回答**。
+     *
+     * 【2026-11-24 修】以前这里只看端口通不通。结果是：网关起来了、但配置里没
+     * models/provider → probe() 返回 true → complete() 每次都先走网关、拿 500、
+     * 再回退本地模型。用户侧表现就是「每次对话都晚一拍 + 报一次错」。
+     * 判据改成：端口能连 **且** 配置文件里有可用的 provider。
+     * 没有 provider 就不算可用，直接走本地模型，不浪费那一轮。
+     */
     fun probe(): Boolean {
         val now = System.currentTimeMillis()
         if (now - lastProbeAt < 15_000) return lastProbeOk
@@ -184,6 +192,9 @@ object AgentClient {
             if (p < 0) {
                 lastProbeError = "所有候选端口都不通 " + PORTS.joinToString(",")
                 false
+            } else if (!configHasProvider()) {
+                lastProbeError = "网关在跑但没有可用模型配置（未填 API key）→ 用本地模型"
+                false
             } else true
         } catch (t: Throwable) {
             lastProbeError = (t.javaClass.simpleName + ": " + (t.message ?: "")) +
@@ -193,6 +204,39 @@ object AgentClient {
         }
         lastProbeOk = ok
         return ok
+    }
+
+    /**
+     * 内嵌网关配置里有模型 provider 吗？
+     *
+     * 判据：models.providers 里至少有一个 provider 带 apiKey。
+     * 没 key 的 provider 网关会接受定义、但请求时 401/500，所以等于没有。
+     * 读不到配置 → 当作没有（宁可用本地模型，也不要白跑一趟网关）。
+     */
+    private fun configHasProvider(): Boolean {
+        return try {
+            val cfg = configFileRef ?: return false
+            if (!cfg.exists()) return false
+            val providers = JSONObject(cfg.readText())
+                .optJSONObject("models")
+                ?.optJSONObject("providers")
+                ?: return false
+            val names = providers.keys()
+            while (names.hasNext()) {
+                val pv = providers.optJSONObject(names.next()) ?: continue
+                if (pv.optString("apiKey", "").isNotBlank()) return true
+            }
+            false
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
+    /** 由 GatewayLauncher 注入配置路径（它才知道 home 在哪） */
+    @Volatile private var configFileRef: java.io.File? = null
+
+    fun bindConfig(f: java.io.File) {
+        configFileRef = f
     }
 
     /**

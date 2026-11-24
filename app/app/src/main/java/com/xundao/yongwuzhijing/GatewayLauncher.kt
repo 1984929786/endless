@@ -196,6 +196,9 @@ class GatewayLauncher(private val ctx: Context) {
         startSteps.add("libs ok")
         if (!writeDefaultConfig()) return false
         startSteps.add("config ok")
+        // 把配置路径交给 AgentClient，让它能判断「网关到底能不能回答」
+        // 没这一步 probe() 无法区分「网关在跑」和「网关能用」
+        AgentClient.bindConfig(configFile)
         if (!spawn()) return false
         startSteps.add("spawn ok")
         // 【2026-11-22 根因修复】网关进程跑起来之后，必须拉前台服务 + 唤醒锁，

@@ -343,15 +343,15 @@
           call('mode').then(function (m) {
             state.agentReady = (String(m) === 'agent');
           }).catch(function () {});
-          // 即使成功也要看走了哪条链路 —— 否则「本地模型的套话」会被当成成功
-          appendDiag();
+          // 成功不贴诊断（2026-11-24）：以前默认把 [诊断] 拼进正文，
+          // 本地模型正常回答时气泡尾巴挂着 src=/HTTP 500，看起来像出错。
         }
 
         function appendDiag() {
+          if (window.__diagOn !== true) return;
           call('diag').then(function (d) {
             var s = String(d || '');
-            // 默认显示：排查期间需要一眼看出走的是网关还是本地模型
-            if (window.__diagOn !== false) bubble.textContent += '\n\n[诊断] ' + s;
+            if (s) bubble.textContent += '\n\n[诊断] ' + s;
           }).catch(function () {});
         }
 
@@ -522,7 +522,7 @@
     keyCard.appendChild(kt);
     var kd = document.createElement('div');
     kd.className = 'card-desc';
-    kd.textContent = 'DeepSeek 的 key。不填就只能用手机本地模型，不能用工具。';
+    kd.textContent = '可选。不填就用手机自己的本地模型（Qwen3-1.7B，离线可用）；填了才用云端模型和工具能力。';
     keyCard.appendChild(kd);
 
     var kIn = document.createElement('input');
