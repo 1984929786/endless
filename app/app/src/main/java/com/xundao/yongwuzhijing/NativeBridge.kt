@@ -129,8 +129,25 @@ class NativeBridge(
         val t0 = System.currentTimeMillis()
         val r = AgentClient.chat(listOf(Triple("user", "只回答两个字：在线", "")), "ywzj-diag")
         val ms = System.currentTimeMillis() - t0
-        return if (r.ok) "成功 ${ms}ms: " + r.text.take(60)
-        else "失败 ${ms}ms: " + r.error + " | " + AgentClient.lastChatNote
+        if (r.ok) return "成功 ${ms}ms: " + r.text.take(60)
+
+        // 【2026-11-24】失败时不能只说「返回 500」。网关把真因写进 logWarn，
+        // 界面拿不到 → 每次排障都要从零开始（TOOLS.md F27 同一个坑，又犯了一次）。
+        // 这里直接把网关日志尾部的关键行带出来。
+        val hint = try {
+            val log = java.io.File(context.filesDir, "openclaw/gateway.log")
+            val lines = tail(log, 120).split('\n')
+            // 优先带「有信息量」的行：错误 / 警告 / 模型 / provider
+            val key = lines.filter { l ->
+                val s = l.lowercase()
+                (s.contains("error") || s.contains("warn") || s.contains("fail") ||
+                 s.contains("model") || s.contains("provider") || s.contains("agent")) &&
+                !s.contains("model-pricing")   // 联网拉价格失败是噪音，人人都有
+            }.takeLast(3).joinToString(" ⏎ ").trim()
+            if (key.isNotEmpty()) " | 网关日志: " + key.take(300) else ""
+        } catch (e: Throwable) { "" }
+
+        return "失败 ${ms}ms: " + r.error + " | " + AgentClient.lastChatNote + hint
     }
 
     /** Agent 开关当前值 */

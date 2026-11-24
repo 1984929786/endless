@@ -205,6 +205,86 @@ class GatewayLauncher(private val ctx: Context) {
     }
 
     /**
+     * 端口上还有别人占着吗（不管是不是本 App 的 proc 对象）。
+     *
+     * 【2026-11-24 根因】日志实证：
+     *   Gateway failed to start: another gateway instance is already listening on ws://127.0.0.1:18800
+     *   Port 18800 is already in use.
+     * App 重启后 proc 字段为 null → isRunning() 返 false → 走完整启动 →
+     * 但旧进程根本没死，还占着 18800 → 新进程绑不上端口就退出 →
+     * 而旧网关用的是旧配置（没有 provider）→ 每次对话都是 500。
+     */
+    private fun portBusy(): Boolean {
+        return try {
+            val s = java.net.Socket()
+            s.connect(java.net.InetSocketAddress("127.0.0.1", PORT), 1200)
+            s.close()
+            true
+        } catch (t: Throwable) { false }
+    }
+
+    /**
+     * 杀掉占用 PORT 的本地进程。
+     *
+     * Android 没有 lsof，也不能用 pm 跨进程（见 TOOLS.md F28）。
+     * 走的足系统自带的 /proc/net/tcp：它列出所有监听 socket（十六进制端口 + inode），
+     * 再扫 /proc 下每个 pid 的 fd 目录比对 inode。只能看到本 uid 的进程 —— 而孤儿子刚就是本 uid。
+     * 扫不到就退而求其次：把 pid 文件/自身 spawn 的进程全杀一遍。
+     */
+    private fun killByPort() {
+        try {
+            // 1. 找出监听 PORT 的 inode
+            val hexPort = String.format("%04X", PORT)
+            val inodes = mutableSetOf<String>()
+            for (f in listOf("/proc/net/tcp", "/proc/net/tcp6")) {
+                val file = java.io.File(f)
+                if (!file.exists() || !file.canRead()) continue
+                file.forEachLine { line ->
+                    val p = line.trim().split(Regex("\\s+"))
+                    // 格式: sl local_address rem_address st ... inode
+                    // st == 0A 表示 LISTEN
+                    if (p.size > 9 && p[1].endsWith(":" + hexPort) && p[3] == "0A") {
+                        inodes.add(p[9])
+                    }
+                }
+            }
+            if (inodes.isEmpty()) {
+                Boot.trace(ctx, "killByPort: 没找到监听 $PORT 的 inode")
+            }
+
+            // 2. 扫本进程能看到的所有 /proc/<pid>，比对 fd -> socket:[inode]
+            val myPid = android.os.Process.myPid()
+            val killed = mutableListOf<Int>()
+            val procDir = java.io.File("/proc")
+            val pids = procDir.list() ?: emptyArray()
+            for (d in pids) {
+                val pid = d.toIntOrNull() ?: continue
+                if (pid == myPid) continue
+                val fdDir = java.io.File("/proc/$d/fd")
+                val fds = try { fdDir.list() } catch (t: Throwable) { null } ?: continue
+                var hit = false
+                for (fd in fds) {
+                    val link = try {
+                        java.nio.file.Files.readSymbolicLink(fdDir.toPath().resolve(fd)).toString()
+                    } catch (t: Throwable) { continue }
+                    if (inodes.any { link.contains("socket:[$it]") }) { hit = true; break }
+                }
+                if (hit) {
+                    android.os.Process.sendSignal(pid, 9)
+                    killed.add(pid)
+                }
+            }
+            Boot.trace(ctx, "killByPort: inodes=$inodes killed=$killed")
+
+            // 3. 兜底：本实例曾经 spawn 过的进程对象也 terminate 掉
+            try { proc?.destroyForcibly() } catch (_: Throwable) {}
+            proc = null
+        } catch (t: Throwable) {
+            Boot.trace(ctx, "killByPort 失败: ${t.javaClass.simpleName}: ${t.message}")
+        }
+    }
+
+    /**
      * 重写配置（设置页改了 API key 后调）。
      * 不重启进程 —— 配置只在网关启动时读，所以界面要提示用户点「重启网关」。
      */
@@ -217,6 +297,23 @@ class GatewayLauncher(private val ctx: Context) {
     fun start(): Boolean {
         startSteps.clear()
         if (isRunning()) { startSteps.add("已运行"); return true }
+
+        // 【2026-11-24】端口被占 + 不是本实例的 proc = 孤儿网关（旧配置）。
+        // 必须清掉，否则新进程绑不上端口，而请求被哑网关接走 → 永远 500。
+        if (portBusy()) {
+            startSteps.add("清理旧网关")
+            killByPort()
+            var waited = 0
+            while (portBusy() && waited < 8000) {
+                Thread.sleep(200); waited += 200
+            }
+            if (portBusy()) {
+                lastError = "端口 $PORT 被占，清理失败"
+                return false
+            }
+            startSteps.add("旧网关已清")
+        }
+
         if (!extractAssets()) return false
         startSteps.add("assets ok")
         if (!ensureSymlinks()) return false
