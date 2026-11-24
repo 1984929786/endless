@@ -513,6 +513,55 @@
   function renderSettings() {
     subContent.innerHTML = '';
 
+    // ---- 模型选择：本地 / 云端 ----
+    // 本地是 App 自带的（llama.cpp，离线、不花钱）；云端要填 key。
+    var mc = document.createElement('div');
+    mc.className = 'card';
+    var mt = document.createElement('div');
+    mt.className = 'card-title';
+    mt.textContent = '模型';
+    mc.appendChild(mt);
+
+    var md = document.createElement('div');
+    md.className = 'card-desc';
+    md.textContent = '本地模型：手机自己跑，不联网、不花钱，工具也能用。云端模型：需要 API key，更强但按量计费。';
+    mc.appendChild(md);
+
+    var mRow = document.createElement('div');
+    mRow.style.cssText = 'display:flex;gap:8px;margin-top:10px;';
+    var bLocal = document.createElement('button');
+    var bCloud = document.createElement('button');
+    [bLocal, bCloud].forEach(function (b) {
+      b.style.cssText = 'flex:1;padding:9px 0;font-size:13px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--fg);';
+    });
+    bLocal.textContent = '本地（默认）';
+    bCloud.textContent = '云端';
+    mRow.appendChild(bLocal);
+    mRow.appendChild(bCloud);
+    mc.appendChild(mRow);
+
+    function paintModel(useCloud) {
+      bLocal.style.background = useCloud ? 'var(--bg)' : 'var(--accent, #2b7de9)';
+      bLocal.style.color = useCloud ? 'var(--fg)' : '#fff';
+      bCloud.style.background = useCloud ? 'var(--accent, #2b7de9)' : 'var(--bg)';
+      bCloud.style.color = useCloud ? '#fff' : 'var(--fg)';
+    }
+    call('getUseCloud').then(paintModel).catch(function () { paintModel(false); });
+
+    bLocal.onclick = function () {
+      call('setUseCloud', false).then(function (r) {
+        md.textContent = r;
+        paintModel(false);
+      }).catch(function (e) { md.textContent = '失败: ' + e.message; });
+    };
+    bCloud.onclick = function () {
+      call('setUseCloud', true).then(function (r) {
+        md.textContent = r;
+        paintModel(String(r).indexOf('已切到云端') === 0);
+      }).catch(function (e) { md.textContent = '失败: ' + e.message; });
+    };
+    subContent.appendChild(mc);
+
     // ---- API key（模型能力的前提，没有它网关会 500）----
     var keyCard = document.createElement('div');
     keyCard.className = 'card';

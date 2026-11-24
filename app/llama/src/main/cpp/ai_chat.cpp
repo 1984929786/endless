@@ -34,10 +34,10 @@ constexpr int   OVERFLOW_HEADROOM       = 4;
 constexpr int   BATCH_SIZE              = 512;
 constexpr float DEFAULT_SAMPLER_TEMP    = 0.3f;
 
-static llama_model                      * g_model;
-static llama_context                    * g_context;
+llama_model                      * g_model;
+llama_context                    * g_context;
 static common_batch                       g_batch;
-static common_chat_templates_ptr          g_chat_templates;
+common_chat_templates_ptr          g_chat_templates;
 static common_sampler                   * g_sampler;
 
 extern "C"

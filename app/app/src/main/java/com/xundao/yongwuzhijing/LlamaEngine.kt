@@ -191,6 +191,9 @@ object LlamaEngine {
     }
 
     /** 卸载模型（释放内存，但保留 backend） */
+    /** 模型是否已加载完成（给 LlamaToolEngine 判定用） */
+    fun isReady(): Boolean = loaded && engine != null
+
     fun unload() {
         if (!loaded) return
         try {

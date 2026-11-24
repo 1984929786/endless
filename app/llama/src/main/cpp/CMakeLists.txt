@@ -54,7 +54,8 @@ set(LLAMA_BUILD_SERVER OFF CACHE BOOL "" FORCE)
 add_subdirectory(${LLAMA_SRC} build-llama)
 
 add_library(${YWZJ_LIB} SHARED
-        ai_chat.cpp)
+        ai_chat.cpp
+        ai_chat_tools.cpp)
 
 target_compile_definitions(${YWZJ_LIB} PRIVATE
         GGML_SYSTEM_ARCH=${GGML_SYSTEM_ARCH}

@@ -428,6 +428,49 @@ class ModelBridge(private val context: Context) {
     }
 
     /**
+     * 带工具的对话。走 LlamaToolEngine（整段生成 + llama.cpp 原生 tool_calls 解析）。
+     *
+     * 请求里的 tools 原样传给 native；native 返回 {content, tool_calls}，
+     * 这里包成 OpenAI /v1/chat/completions 的响应格式，网关那边就不用改。
+     */
+    private fun chatWithTools(messages: JSONArray, tools: JSONArray, req: JSONObject): String {
+        val t0 = System.currentTimeMillis()
+        val raw = LlamaToolEngine.generate(
+            messages.toString(),
+            tools.toString(),
+            req.optInt("max_tokens", 1024).coerceIn(64, 2048)
+        )
+        val parsed = try { JSONObject(raw) } catch (t: Throwable) {
+            return """{"error":{"message":"引擎返回不是 JSON","type":"inference_error"}}"""
+        }
+        parsed.optJSONObject("error")?.let { e ->
+            return """{"error":{"message":"${esc(e.optString("message"))}","type":"inference_error"}}"""
+        }
+
+        val content = parsed.optString("content", "")
+        val tcs = parsed.optJSONArray("tool_calls") ?: JSONArray()
+
+        val outMsg = JSONObject().put("role", "assistant")
+        if (content.isNotEmpty()) outMsg.put("content", content)
+        if (tcs.length() > 0) outMsg.put("tool_calls", tcs)
+
+        val choice = JSONObject()
+            .put("index", 0)
+            .put("message", outMsg)
+            .put("finish_reason", if (tcs.length() > 0) "tool_calls" else "stop")
+
+        val resp = JSONObject()
+            .put("id", "chatcmpl-" + System.currentTimeMillis())
+            .put("object", "chat.completion")
+            .put("created", System.currentTimeMillis() / 1000)
+            .put("model", req.optString("model", "local-qwen3"))
+            .put("choices", JSONArray().put(choice))
+
+        Log.i(TAG, "工具对话完成 " + (System.currentTimeMillis() - t0) + "ms content=" + content.length + " 工具=" + tcs.length())
+        return resp.toString()
+    }
+
+    /**
      * OpenAI /v1/chat/completions -> llama.cpp
      */
     private fun chatCompletion(reqBody: String): String {
@@ -439,6 +482,13 @@ class ModelBridge(private val context: Context) {
         }
 
         val messages = req.optJSONArray("messages") ?: JSONArray()
+        val tools = req.optJSONArray("tools")
+
+        // 【2026-11-24】带 tools 的请求走新路：整段生成 + llama.cpp 原生 tool_calls 解析。
+        // 旧的 complete() 是逐 token 流式，接不了工具调用。
+        if (tools != null && tools.length() > 0) {
+            return chatWithTools(messages, tools, req)
+        }
 
         // llama.cpp 走 chat template，我们把 system 和最后的 user 拆开
         var systemPrompt: String? = null

@@ -67,7 +67,18 @@ class GatewayLauncher(private val ctx: Context) {
          *
          * apiKey 从 SharedPreferences 读（设置页填入），不写在源码里。
          */
-        const val DEFAULT_MODEL = "deepseek/deepseek-chat"
+        /** 本地模型 id（离线、不花钱）。默认用这个。 */
+        const val LOCAL_MODEL = "local/local-qwen3"
+
+        /** 云端模型 id（设置页填了 API key 才可用）。 */
+        const val CLOUD_MODEL = "deepseek/deepseek-chat"
+
+        /** 当前选中的模型。默认本地；设置页勾了"用云端"且有 key 才切。 */
+        fun currentModel(): String {
+            val prefs = appCtx?.getSharedPreferences("ywzj_prefs", Context.MODE_PRIVATE)
+            val useCloud = prefs?.getBoolean("use_cloud", false) ?: false
+            return if (useCloud && apiKey().isNotBlank()) CLOUD_MODEL else LOCAL_MODEL
+        }
 
         private val MODELS_JSON: String
             get() {
@@ -75,7 +86,23 @@ class GatewayLauncher(private val ctx: Context) {
                 return buildString {
                     append("{")
                     append("\"mode\":\"merge\",")
-                    append("\"providers\":{\"deepseek\":{")
+                    // 本地 provider：指向 App 自己的 llama.cpp（127.0.0.1:18790）。
+                    // 不需要真 key，离线可用，是默认路径。
+                    append("\"providers\":{")
+                    append("\"local\":{")
+                    append("\"baseUrl\":\"http://127.0.0.1:18790/v1\",")
+                    append("\"api\":\"openai-completions\",")
+                    append("\"apiKey\":\"local\",")
+                    append("\"models\":[{")
+                    append("\"id\":\"local-qwen3\",")
+                    append("\"name\":\"本地模型 Qwen3\",")
+                    append("\"reasoning\":false,")
+                    append("\"input\":[\"text\"],")
+                    append("\"contextWindow\":8192,")
+                    append("\"maxTokens\":1024,")
+                    append("\"api\":\"openai-completions\"")
+                    append("}]},")
+                    append("\"deepseek\":{")
                     append("\"baseUrl\":\"https://api.deepseek.com\",")
                     append("\"api\":\"openai-completions\",")
                     if (key.isNotBlank()) {
@@ -491,7 +518,7 @@ class GatewayLauncher(private val ctx: Context) {
                 append("  },\n")
                 append("  \"session\": { \"dmScope\": \"per-channel-peer\" },\n")
                 append("  \"models\": ").append(MODELS_JSON).append(",\n")
-                append("  \"agents\": { \"defaults\": { \"model\": { \"primary\": \"").append(DEFAULT_MODEL).append("\" } } },\n")
+                append("  \"agents\": { \"defaults\": { \"model\": { \"primary\": \"").append(currentModel()).append("\" } } },\n")
                 append("  \"auth\": { \"profiles\": { \"deepseek:default\": { \"provider\": \"deepseek\", \"mode\": \"api_key\" } } }\n")
                 append("}\n")
             }
@@ -505,7 +532,7 @@ class GatewayLauncher(private val ctx: Context) {
                     existing.contains("chatCompletions") &&
                     existing.contains("\"port\": $PORT") &&
                     existing.contains("\"providers\"") &&
-                    existing.contains(DEFAULT_MODEL) &&
+                    existing.contains(currentModel()) &&
                     keyOk
             if (ok) return true
 
@@ -533,7 +560,7 @@ class GatewayLauncher(private val ctx: Context) {
                     root.put("models", org.json.JSONObject(MODELS_JSON))
                     val ag = root.optJSONObject("agents") ?: org.json.JSONObject()
                     val agd = ag.optJSONObject("defaults") ?: org.json.JSONObject()
-                    agd.put("model", org.json.JSONObject().put("primary", DEFAULT_MODEL))
+                    agd.put("model", org.json.JSONObject().put("primary", currentModel()))
                     ag.put("defaults", agd)
                     root.put("agents", ag)
                     val au = root.optJSONObject("auth") ?: org.json.JSONObject()

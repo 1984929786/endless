@@ -155,6 +155,20 @@ class NativeBridge(
         return "已保存"
     }
 
+    /** 当前用的是不是云端模型 */
+    @JavascriptInterface
+    fun getUseCloud(): Boolean = GatewayLauncher.currentModel() == GatewayLauncher.CLOUD_MODEL
+
+    /** 切换 本地/云端。云端必须已存 key，否则拒绝。 */
+    @JavascriptInterface
+    fun setUseCloud(on: Boolean): String {
+        if (on && GatewayLauncher.apiKey().isBlank()) return "先用上方的框填 API key"
+        context.getSharedPreferences("ywzj_prefs", Context.MODE_PRIVATE)
+            .edit().putBoolean("use_cloud", on).apply()
+        GatewayLauncher.get(context).rewriteConfig()
+        return if (on) "已切到云端（重启网关后生效）" else "已切回本地"
+    }
+
     private fun countFiles(dir: java.io.File): Int {
         var n = 0
         try {
@@ -288,6 +302,9 @@ class NativeBridge(
                             lastProgress = "就绪"
                             lastLoadError = null
                             CrashCatcher.stage("模型加载成功")
+                            // 模型就绪后把工具引擎也点名（共用同一份 native g_model/g_context）
+                            val toolsOk = LlamaToolEngine.ensureLoaded(context)
+                            CrashCatcher.stage("工具引擎: " + if (toolsOk) "ok" else LlamaToolEngine.error)
                         } else {
                             lastLoadError = msg
                             CrashCatcher.stage("模型加载失败: $msg")
