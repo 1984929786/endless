@@ -189,7 +189,12 @@ class GatewayLauncher(private val ctx: Context) {
         val p = proc
         val rt = File(root, "runtime")
         val count = try { rt.walkTopDown().count { it.isFile } } catch (_: Throwable) { -1 }
-        return "steps=[" + steps + "] pid=" + (if (p != null && p.isAlive) pidOf(p) else "-") +
+        // 【2026-11-24】pid 显示为「-」时，用户无法区分
+        // 「我拉起的进程」和「上次留下的孤儿」。这里把两个都列出来。
+        val myPid = if (p != null && p.isAlive) pidOf(p) else "-"
+        val occupied = if (portBusy()) "是" else "否"
+        return "steps=[" + steps + "] pid=" + myPid +
+                " 端口占用=" + occupied +
                 " files=" + count +
                 (if (lastError.isBlank()) "" else " err=" + lastError)
     }
@@ -751,10 +756,24 @@ class GatewayLauncher(private val ctx: Context) {
                 lastError = (if (died) "进程已退出" else "端口超时") + " | node 输出: " + tail
                 startSteps.add(if (died) "进程已退出" else "端口超时")
                 Boot.trace(ctx, lastError)
-            } else {
-                startSteps.add("port ok")
+                return false
             }
-            ok
+
+            // 【2026-11-24 根因】端口通 ≠ 我拉起的这个进程活着。
+            // 旧版只要 waitPort 过了就报「已启动」，可实际是新进程绑不上端口后
+            // 立刻退出、旧网关还在应答 —— 界面于是显示「运行正常」但每次对话都 500。
+            // 这里必须验：① 我拉起的进程没有退出；② 它真的能回答（而不是只开了端口）。
+            Thread.sleep(1500)   // 给它一点时间，若绑端口失败就会在这期间退出
+            val aliveAfter = try { p.isAlive } catch (_: Throwable) { false }
+            if (!aliveAfter) {
+                val tail = tailOf(logFile, logStart, 25)
+                lastError = "新进程启动后立即退出（端口被占或配置错）| node 输出: " + tail
+                startSteps.add("新进程已退出")
+                Boot.trace(ctx, lastError)
+                return false
+            }
+            startSteps.add("port ok")
+            true
         } catch (t: Throwable) {
             lastError = "启动失败: ${t.javaClass.simpleName}: ${t.message}"
             Boot.trace(ctx, lastError)
