@@ -38,7 +38,12 @@ class NativeBridge(
      */
     @JavascriptInterface
     fun bootstrap(): String {
-        if (bridge.modelReady) return "ready"
+        if (bridge.modelReady) {
+            // 模型已就绪时也要确保 HTTP 服务在跑（onDone 只执行一次，
+            // 后续 App 重启进了这条分支就不会再触发 startServer）。startServer 内部幂等。
+            try { bridge.startServer() } catch (_: Throwable) {}
+            return "ready"
+        }
         if (loading.get()) return "loading"
         startLoadAsync()
         return "loading"
@@ -319,6 +324,17 @@ class NativeBridge(
                             lastProgress = "就绪"
                             lastLoadError = null
                             CrashCatcher.stage("模型加载成功")
+                            // 【2026-11-25 根因】网关配置里的 provider 指向 http://127.0.0.1:18790/v1，
+                            // 但 ModelBridge.startServer() 全项目没有任何调用点 —— 18790 从来没有监听。
+                            // 于是网关每次转发请求都 ECONNREFUSED → 回 500 internal error。
+                            // 聊天之所以能通，是因为它走的是直连 JNI（native.chat），不经过 HTTP。
+                            // 模型加载成功就把 HTTP 服务拉起来，网关才真正「接上模型」。
+                            try {
+                                bridge.startServer()
+                                CrashCatcher.stage("本地模型 HTTP 服务已启动 127.0.0.1:18790")
+                            } catch (t: Throwable) {
+                                CrashCatcher.stage("startServer 失败: " + t.message)
+                            }
                             // 模型就绪后把工具引擎也点名（共用同一份 native g_model/g_context）
                             val toolsOk = LlamaToolEngine.ensureLoaded(context)
                             CrashCatcher.stage("工具引擎: " + if (toolsOk) "ok" else LlamaToolEngine.error)
