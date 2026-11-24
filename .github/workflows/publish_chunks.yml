@@ -1,0 +1,79 @@
+name: Publish APK as git chunks
+
+# 目的：artifact 下载通道在部分网络上被阻断（TLS 被中断），
+# 这里把 APK 切成 90MB 分片提交到 apk-chunks 分支，
+# 手机端用 codeload（实测可达）拉分片重组。
+on:
+  workflow_run:
+    workflows: ["Build Endless APK"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: 要发布的 run id
+        required: false
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  publish:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve run id
+        id: r
+        run: |
+          set -e
+          if [ -n "${{ inputs.run_id }}" ]; then
+            echo "id=${{ inputs.run_id }}" >> $GITHUB_OUTPUT
+          else
+            echo "id=${{ github.event.workflow_run.id }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Download artifact
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          gh api "repos/${{ github.repository }}/actions/runs/${{ steps.r.outputs.id }}/artifacts" \
+            --jq '.artifacts[] | select(.name=="endless-debug-apk") | .id' > /tmp/aid
+          AID=$(cat /tmp/aid)
+          echo "artifact id: $AID"
+          gh api "repos/${{ github.repository }}/actions/artifacts/$AID/zip" > /tmp/apk.zip
+          ls -l /tmp/apk.zip
+          mkdir -p /tmp/out
+          cd /tmp/out && unzip -o /tmp/apk.zip
+          find . -name '*.apk' -exec ls -l {} \;
+
+      - name: Split into chunks
+        run: |
+          set -e
+          APK=$(find /tmp/out -name '*.apk' | head -1)
+          echo "APK=$APK"
+          mkdir -p /tmp/chunks
+          cd /tmp/chunks
+          split -b 90m "$APK" part.
+          ls -l | head -20
+          echo "分片数: $(ls part.* | wc -l)"
+          # 元信息：手机端据此校验
+          SZ=$(stat -c%s "$APK")
+          N=$(ls part.* | wc -l)
+          SHA=$(sha256sum "$APK" | awk '{print $1}')
+          printf '{"size":%s,"parts":%s,"sha256":"%s","source_run":"%s"}\n' "$SZ" "$N" "$SHA" "${{ steps.r.outputs.id }}" > info.json
+          cat info.json
+
+      - name: Push to apk-chunks branch
+        run: |
+          set -e
+          cd /tmp
+          git init repo && cd repo
+          git config user.name "ci-bot"
+          git config user.email "ci@localhost"
+          git checkout -b apk-chunks
+          # 清空旧分片，只留最新一份（仓库不膨胀）
+          cp /tmp/chunks/* .
+          git add -A
+          git commit -m "apk chunks for run ${{ steps.r.outputs.id }} [skip ci]"
+          git push --force "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" apk-chunks
