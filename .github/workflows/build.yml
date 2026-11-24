@@ -362,6 +362,20 @@ jobs:
           ls "$DEST" | sort > /tmp/libs.txt
           cat /tmp/libs.txt
 
+      # 【2026-11-24 新增】写代码前先查引用完整性，不要等到 Kotlin 编译才炸。
+      # 触发事故：脚本批量替换 GatewayLauncher.kt 时连带删掉了 PREF_KEY 常量，
+      # 本地预检（只查注释/字符串边界）全绿，CI 编译到一半才报 Unresolved reference。
+      # 这道关卡 1 秒内能拦。
+      - name: Kotlin precheck (syntax + undefined constants)
+        run: |
+          set -e
+          echo "=== 注释/字符串边界 ==="
+          node tools/kt_precheck.js app/app/src/main/java/com/xundao/yongwuzhijing
+          echo "=== 未定义常量 ==="
+          # 只查自家代码。app/llama 下的 arm/aichat 是上游 vendor 代码，
+          # 里面的 INT64/FLOAT64 是 GGUF 规范常量、从别处引用，不在本关范围。
+          node tools/kt_refs.js app/app/src/main/java/com/xundao/yongwuzhijing
+
       - name: Build debug APK
         working-directory: app
         run: |

@@ -67,9 +67,11 @@ class GatewayLauncher(private val ctx: Context) {
          *
          * apiKey 从 SharedPreferences 读（设置页填入），不写在源码里。
          */
+        /** 设置页里存 API key 的 SharedPreferences 键名 */
+        private const val PREF_KEY = "deepseek_key"
+
         /** 本地模型 id（离线、不花钱）。默认用这个。 */
         const val LOCAL_MODEL = "local/local-qwen3"
-
         /** 云端模型 id（设置页填了 API key 才可用）。 */
         const val CLOUD_MODEL = "deepseek/deepseek-chat"
 
@@ -170,8 +172,6 @@ class GatewayLauncher(private val ctx: Context) {
          * 没有 key 时 models 段不写 apiKey —— 网关会返回可读的配置错误，
          * 而不是静默 500。这比「造假 key 装上看起来正常」诚实。
          */
-        private const val PREF_KEY = "deepseek_key"
-
     private val root: File get() = File(ctx.filesDir, ASSET_DIR)
     private val home: File get() = File(root, "home")
     private val state: File get() = File(root, "state")
