@@ -34,6 +34,11 @@ if (!fs.existsSync(root)) { console.log('✗ 目录不存在: ' + root); process
 function loadAcorn() {
   const cands = [];
   if (process.env.ACORN_PATH) cands.push(process.env.ACORN_PATH);
+  // 【2026-11-24 根本修复】仓库内置 acorn（tools/vendor_acorn.cjs，MIT，原样搬运）。
+  // CI 里没有 acorn 是既定事实（openclaw@2026.4.2 的 deps/devDeps 都不含它），
+  // 而「找不到就降级」正是 3.7.0 把 182 个文件标识符改坏的根因。
+  // 内置之后这条路就一定存在，不再依赖任何外部目录布局。
+  cands.push(path.join(__dirname, 'vendor_acorn.cjs'));
   cands.push(path.join(root, 'node_modules/acorn'));
   // CI 真实位置：workspace/openclaw-runtime/node_modules/openclaw/node_modules/acorn
   cands.push(path.join(__dirname, '..', 'openclaw-runtime', 'node_modules', 'openclaw', 'node_modules', 'acorn'));
@@ -335,7 +340,7 @@ if (!acorn) {
   // fail-closed：没有精确审计能力就不许改包。
   // 历史事故：这里原本是「悄悄降级」，于是 182 个文件的标识符被改坏，装到手机才曝。
   console.log('✗ 找不到 acorn，无法做标识符审计，拒绝改包。');
-  console.log('   设置 ACORN_PATH 指向 acorn 目录后重跑。');
+  console.log('   内置 tools/vendor_acorn.cjs 都不见了？检查它是否被删。');
   process.exit(1);
 }
 
