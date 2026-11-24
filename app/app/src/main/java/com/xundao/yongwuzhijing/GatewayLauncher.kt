@@ -62,6 +62,55 @@ class GatewayLauncher(private val ctx: Context) {
          */
         const val TOKEN = "ywzj-3f9c41d8a7b04e25bb6e1d0c9f7a2c53"
 
+        /**
+         * 模型段（models + agents + auth）。没有它 /v1/chat/completions 必 500。
+         *
+         * apiKey 从 SharedPreferences 读（设置页填入），不写在源码里。
+         */
+        const val DEFAULT_MODEL = "deepseek/deepseek-chat"
+
+        private val MODELS_JSON: String
+            get() {
+                val key = apiKey()
+                return buildString {
+                    append("{")
+                    append("\"mode\":\"merge\",")
+                    append("\"providers\":{\"deepseek\":{")
+                    append("\"baseUrl\":\"https://api.deepseek.com\",")
+                    append("\"api\":\"openai-completions\",")
+                    if (key.isNotBlank()) {
+                        append("\"apiKey\":").append(org.json.JSONObject.quote(key)).append(",")
+                    }
+                    append("\"models\":[{")
+                    append("\"id\":\"deepseek-chat\",")
+                    append("\"name\":\"DeepSeek Chat\",")
+                    append("\"reasoning\":false,")
+                    append("\"input\":[\"text\",\"image\"],")
+                    append("\"contextWindow\":131072,")
+                    append("\"maxTokens\":8192,")
+                    append("\"compat\":{\"supportsUsageInStreaming\":true},")
+                    append("\"api\":\"openai-completions\"")
+                    append("}]}}")
+                    append("}")
+                }
+            }
+
+        /** 读/写 API key。设置页调 setApiKey，写配置时自动用上。 */
+        fun apiKey(): String = try {
+            appCtx?.getSharedPreferences("ywzj_prefs", Context.MODE_PRIVATE)
+                ?.getString(PREF_KEY, "").orEmpty()
+        } catch (_: Throwable) {
+            ""
+        }
+
+        fun setApiKey(key: String) {
+            appCtx?.getSharedPreferences("ywzj_prefs", Context.MODE_PRIVATE)
+                ?.edit()?.putString(PREF_KEY, key.trim())?.apply()
+        }
+
+        /** application context 快照 —— companion 里拿不到实例的 private ctx */
+        @Volatile private var appCtx: Context? = null
+
         /** assets 里运行时目录名 */
         private const val ASSET_DIR = "openclaw"
 
@@ -80,9 +129,21 @@ class GatewayLauncher(private val ctx: Context) {
 
         fun get(ctx: Context): GatewayLauncher =
             INSTANCE ?: synchronized(this) {
+                appCtx = ctx.applicationContext
                 INSTANCE ?: GatewayLauncher(ctx.applicationContext).also { INSTANCE = it }
             }
     }
+
+    /**
+         * DeepSeek API key 存储位置。
+         *
+         * 为什么不硬编码进源码：源码进 git、APK 会被分发，key 写死在里面等于公开。
+         * 所以放在 App 私有 SharedPreferences（`ywzj_prefs/deepseek_key`），
+         * 由「设置」页首次填写，GatewayLauncher 每次写配置时读取。
+         * 没有 key 时 models 段不写 apiKey —— 网关会返回可读的配置错误，
+         * 而不是静默 500。这比「造假 key 装上看起来正常」诚实。
+         */
+        private const val PREF_KEY = "deepseek_key"
 
     private val root: File get() = File(ctx.filesDir, ASSET_DIR)
     private val home: File get() = File(root, "home")
@@ -115,6 +176,12 @@ class GatewayLauncher(private val ctx: Context) {
         if (!p.isAlive) return false
         return probePort()
     }
+
+    /**
+     * 重写配置（设置页改了 API key 后调）。
+     * 不重启进程 —— 配置只在网关启动时读，所以界面要提示用户点「重启网关」。
+     */
+    fun rewriteConfig(): Boolean = writeDefaultConfig()
 
     /**
      * 启动网关。幂等：已在跑就直接返回 true。
@@ -395,6 +462,13 @@ class GatewayLauncher(private val ctx: Context) {
      * 写默认配置。已存在就不动（保留用户改动）。
      *
      * 关键：端口 18800，绑 loopback，和寻道的 18789 完全分开。
+     *
+     * 【2026-11-24 补 models 段 —— 这是「测试对话 500」的真正根因】
+     * 之前这里只写 gateway + session，**完全没有 models / providers / agents**。
+     * 网关能起来、/health 200、端口连通，但一旦 POST /v1/chat/completions，
+     * 它找不到任何可用的模型 provider → 内部抛错 → 500（119ms 就返回）。
+     * 表现是「链路全绿，唯独不能说话」，我因此白排查了一轮。
+     * 判据：配置里没有 models.providers 和 agents.defaults.model，就不算配置完成。
      */
     private fun writeDefaultConfig(): Boolean {
         return try {
@@ -412,15 +486,24 @@ class GatewayLauncher(private val ctx: Context) {
                 append("    \"auth\": { \"mode\": \"token\", \"token\": \"").append(TOKEN).append("\" },\n")
                 append("    \"http\": { \"endpoints\": { \"chatCompletions\": { \"enabled\": true } } }\n")
                 append("  },\n")
-                append("  \"session\": { \"dmScope\": \"per-channel-peer\" }\n")
+                append("  \"session\": { \"dmScope\": \"per-channel-peer\" },\n")
+                append("  \"models\": ").append(MODELS_JSON).append(",\n")
+                append("  \"agents\": { \"defaults\": { \"model\": { \"primary\": \"").append(DEFAULT_MODEL).append("\" } } },\n")
+                append("  \"auth\": { \"profiles\": { \"deepseek:default\": { \"provider\": \"deepseek\", \"mode\": \"api_key\" } } }\n")
                 append("}\n")
             }
 
             val existing = if (configFile.exists()) configFile.readText() else ""
-            // 三个必须项：token 对得上、chatCompletions 开了、端口对
+            // 幂等判据必须包含 apiKey 状态，否则「先写配置、后填 key」会永远缺 key
+            val key = apiKey()
+            val keyOk = if (key.isBlank()) !existing.contains("apiKey") else existing.contains(key)
+            // 四个必须项：token 对得上、chatCompletions 开了、端口对、模型段在
             val ok = existing.contains(TOKEN) &&
                     existing.contains("chatCompletions") &&
-                    existing.contains("\"port\": $PORT")
+                    existing.contains("\"port\": $PORT") &&
+                    existing.contains("\"providers\"") &&
+                    existing.contains(DEFAULT_MODEL) &&
+                    keyOk
             if (ok) return true
 
             // 保留用户可能改过的其他字段：只要旧文件能解析，就把 gateway 段覆盖掉，其余不动
@@ -443,13 +526,28 @@ class GatewayLauncher(private val ctx: Context) {
                     if (!root.has("session")) {
                         root.put("session", org.json.JSONObject().put("dmScope", "per-channel-peer"))
                     }
+                    // 模型段整段覆盖：没有它，chat/completions 必 500
+                    root.put("models", org.json.JSONObject(MODELS_JSON))
+                    val ag = root.optJSONObject("agents") ?: org.json.JSONObject()
+                    val agd = ag.optJSONObject("defaults") ?: org.json.JSONObject()
+                    agd.put("model", org.json.JSONObject().put("primary", DEFAULT_MODEL))
+                    ag.put("defaults", agd)
+                    root.put("agents", ag)
+                    val au = root.optJSONObject("auth") ?: org.json.JSONObject()
+                    val aup = au.optJSONObject("profiles") ?: org.json.JSONObject()
+                    aup.put(
+                        "deepseek:default",
+                        org.json.JSONObject().put("provider", "deepseek").put("mode", "api_key")
+                    )
+                    au.put("profiles", aup)
+                    root.put("auth", au)
                     root.toString(2)
                 } else desired
             } catch (_: Throwable) {
                 desired
             }
             configFile.writeText(merged)
-            Boot.trace(ctx, "网关配置已写入（token + chatCompletions 已开）")
+            Boot.trace(ctx, "网关配置已写入（token + chatCompletions + 模型段）")
             true
         } catch (t: Throwable) {
             lastError = "写配置失败: ${t.message}"
