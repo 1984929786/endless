@@ -19,6 +19,9 @@
 #include "common.h"
 #include "llama.h"
 #include "logging.h"
+// common_sampler_init / common_sampler_sample / common_sampler_free 声明在 sampling.h。
+// ai_chat.cpp 有这行，我刚开始漏了 → CI 报 use of undeclared identifier 'common_sampler_init'。
+#include <sampling.h>
 
 // ---- 复用 ai_chat.cpp 里的全局状态（同进程同库，用 extern 取） ----
 extern llama_model *g_model;
