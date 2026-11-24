@@ -35,6 +35,8 @@ function loadAcorn() {
   const cands = [];
   if (process.env.ACORN_PATH) cands.push(process.env.ACORN_PATH);
   cands.push(path.join(root, 'node_modules/acorn'));
+  // CI 真实位置：workspace/openclaw-runtime/node_modules/openclaw/node_modules/acorn
+  cands.push(path.join(__dirname, '..', 'openclaw-runtime', 'node_modules', 'openclaw', 'node_modules', 'acorn'));
   let d = __dirname;
   for (let i = 0; i < 8; i++) {
     cands.push(path.join(d, 'node_modules/acorn'));
@@ -59,9 +61,31 @@ const acorn = loadAcorn(); // 仅用于「自检二」的标识符审计，可�
 // 用自写词法器反推：找「不在字符串区间内、但形如 AAA_xxx」的 token。
 // 两条路都能拦住本次这个 bug。
 const identHits = [];
+// 【2026-11-24 修复】解析失败的文件数。旧的实现里 `catch(_) { continue; }` 会静默跳过，
+// 于是 jsonc-parser/UMD 头这类「acorn module 模式解析不了」的文件永远不会被审计到，
+// 污染就是这样漏到手机上的。现在是 fail-closed：解析失败也走词法审计，审计不出来就报错。
+const auditParseFail = [];
 function runIdentAudit(rt) {
   identHits.length = 0;
+  auditParseFail.length = 0;
   const IDENT_RE = new RegExp('(^|[^A-Za-z0-9_$])' + PREFIX + '_[A-Za-z0-9_$]*', 'g');
+  // 用 acorn 的 token 流判定：只有 name token 才是标识符/属性名，
+  // 字符串与注释 token 天然不算。这样既能覆盖 `export { X as Y }` 这种
+  // 会触发 relink 错误的写法（parse 抛异常但 tokenizer 能跑完），
+  // 也不受 sourceType 选择影响。
+  function tokenAudit(src) {
+    const hits = [];
+    const tok = acorn.tokenizer(src, { ecmaVersion: 'latest', allowHashBang: true, allowAwaitOutsideFunction: true, allowReturnOutsideFunction: true });
+    let t;
+    while (true) {
+      t = tok.getToken();
+      if (!t || t.type.label === 'eof') break;
+      if (t.type.label === 'name' && typeof t.value === 'string' && t.value.startsWith(PREFIX + '_')) {
+        hits.push({ name: t.value, pos: t.start });
+      }
+    }
+    return hits;
+  }
   function scan(dir) {
     for (const name of fs.readdirSync(dir)) {
       const abs = path.join(dir, name);
@@ -76,21 +100,15 @@ function runIdentAudit(rt) {
       if (!src.includes(PREFIX + '_')) continue;
 
       if (acorn) {
-        let ast;
-        try { ast = acorn.parse(src, { ecmaVersion: 'latest', sourceType: 'module', allowHashBang: true }); }
-        catch (_) { continue; }
-        (function walk(node) {
-          if (!node || typeof node !== 'object') return;
-          if (Array.isArray(node)) { for (const c of node) walk(c); return; }
-          if (node.type === 'Identifier' && typeof node.name === 'string' && node.name.startsWith(PREFIX + '_')) {
-            identHits.push(path.relative(rt, abs) + ' :: 标识符 ' + node.name);
-          }
-          for (const k in node) {
-            if (k === 'start' || k === 'end') continue;
-            const v = node[k];
-            if (v && typeof v === 'object') walk(v);
-          }
-        })(ast);
+        let hits = null;
+        try { hits = tokenAudit(src); }
+        catch (e) { hits = null; }
+        if (hits) {
+          for (const h of hits) identHits.push(path.relative(rt, abs) + ' :: 标识符 ' + h.name + ' @' + h.pos);
+        } else {
+          // tokenizer 都跑不动（语法极端异常）：fail-closed，记下来当失败
+          auditParseFail.push(path.relative(rt, abs));
+        }
       } else {
         // 词法降级：在「代码区」找 AAA_ 开头的 token
         const ranges = stringRanges(src);
@@ -108,12 +126,17 @@ function runIdentAudit(rt) {
     }
   }
   scan(rt);
+  if (auditParseFail.length) {
+    console.log('✗ 自检二失败：' + auditParseFail.length + ' 个文件无法词法解析，不能保证没被污染（fail-closed）：');
+    for (const f of auditParseFail.slice(0, 10)) console.log('   ' + f);
+    return false;
+  }
   if (identHits.length) {
     console.log('✗ 自检二失败：' + identHits.length + ' 处代码标识符被误改名（会导致 Export xxx is not defined）：');
     for (const h of identHits.slice(0, 10)) console.log('   ' + h);
     return false;
   }
-  console.log('✓ 自检二通过：无代码标识符被误改名' + (acorn ? '（AST）' : '（词法）'));
+  console.log('✓ 自检二通过：无代码标识符被误改名' + (acorn ? '（token 流）' : '（词法区间）'));
   return true;
 }
 
@@ -298,11 +321,55 @@ function rewrite(dir) {
   }
 }
 
-if (!acorn && names.size) {
-  console.log('⚠ 自检二（标识符审计）无法用 AST，改用词法区间反推');
+if (!acorn) {
+  // fail-closed：没有精确审计能力就不许改包。
+  // 历史事故：这里原本是「悄悄降级」，于是 182 个文件的标识符被改坏，装到手机才曝。
+  console.log('✗ 找不到 acorn，无法做标识符审计，拒绝改包。');
+  console.log('   设置 ACORN_PATH 指向 acorn 目录后重跑。');
+  process.exit(1);
 }
 
 rewrite(root);
+
+// ── 保守否决：未改名的文件里不该出现 AAA_（2026-11-24）────────────────
+// 典型事故面：名字清单来自「目录里以 _ 开头的路径段」。
+// 如果某个文件里已经有 AAA_ 而后缀名不在清单里（上游就带、或者上一轮只改了一半），
+// 那这个名字就永远改不到，而它可能已经被写进引用 → 运行时找不到。
+// 这里直接拒绝，并把位置列出来——让别人（或我下次）一眼能看到是什么。
+// 白名单：只放过「字符串内部」的 AAA_，因为那才是改名的合法产物。
+(function defensivelyReject() {
+  const { stringRanges } = require(path.join(__dirname, 'jsstrings.js'));
+  const offenders = [];
+  (function walk(d) {
+    for (const nm of fs.readdirSync(d)) {
+      const abs = path.join(d, nm);
+      const st = fs.lstatSync(abs);
+      if (st.isDirectory()) { walk(abs); continue; }
+      if (!/\.(js|mjs|cjs)$/.test(nm)) continue;
+      if (st.size > 8 * 1024 * 1024) continue;
+      let src;
+      try { src = fs.readFileSync(abs, 'utf8'); } catch (_) { continue; }
+      if (!src.includes(PREFIX + '_')) continue;
+      let ranges;
+      try { ranges = stringRanges(src); } catch (_) { ranges = []; }
+      const re = new RegExp('(^|[^A-Za-z0-9_$])' + PREFIX + '_[A-Za-z0-9_$]*', 'g');
+      let m;
+      while ((m = re.exec(src)) !== null) {
+        const pos = m.index + m[1].length;
+        if (ranges.some(r => pos >= r.start && pos < r.end)) continue;
+        offenders.push(path.relative(root, abs) + ' :: ' + m[0].slice(m[1].length));
+        break;
+      }
+      if (offenders.length > 20) return;
+    }
+  })(root);
+  if (offenders.length) {
+    console.log('✗ 未知来源的 AAA_ 出现在代码区（名字清单里没有对应项，无法还原）:');
+    for (const o of offenders.slice(0, 15)) console.log('   ' + o);
+    process.exit(1);
+  }
+})();
+
 console.log('✓ 引用改写完成：扫描 ' + scanned + ' 个文件，改动 ' + changed + ' 个，替换 ' + replaced + ' 处'
   + (acorn ? '（AST 处理 ' + astUsed + ' 个 JS）' : ''));
 if (parseFail) {

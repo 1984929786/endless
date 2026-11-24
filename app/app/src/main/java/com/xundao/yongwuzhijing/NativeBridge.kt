@@ -501,8 +501,9 @@ class NativeBridge(
     @JavascriptInterface
     fun modelInfo(): String {
         return try {
+            // 名字从真实文件推导（见 ModelBridge.modelDisplayName）；拿不到就留空，UI 自己回退。
             JSONObject()
-                .put("name", "Qwen3-0.6B")
+                .put("name", bridge.modelDisplayName())
                 .put("path", bridge.currentModelPath())
                 .put("ready", bridge.modelReady)
                 .toString()

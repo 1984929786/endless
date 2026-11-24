@@ -497,7 +497,7 @@
       subContent.innerHTML = '';
       subContent.appendChild(card(
         '当前模型',
-        (info.name || 'Qwen3-1.7B') + ' · 本地运行',
+        (info.name || '本地模型') + ' · 本地运行',
         info.path ? '位置：' + info.path : ''
       ));
       subContent.appendChild(card(
@@ -695,10 +695,20 @@
     refresh();
   }
 
-  function renderAbout() {    subContent.innerHTML = '';
+  function renderAbout() {
+    subContent.innerHTML = '';
     subContent.appendChild(card('永无止境', '版本 1.2.0', '本地智能助手，所有对话留在本机'));
-    subContent.appendChild(card('引擎', 'Cactus Engine v1.14', '为移动设备优化的本地推理引擎'));
-    subContent.appendChild(card('模型', 'Qwen3 系列', '在骁龙/麒麟芯片上本地运行'));
+    subContent.appendChild(card('引擎', 'llama.cpp · GGUF', '为移动设备优化的本地推理引擎'));
+    // 模型名来自 modelInfo（由真实 .gguf 文件名推得），不再写死型号——之前写死 0.6B 而实际跑 1.7B 就是文案 bug
+    call('modelInfo').then(function (json) {
+      var info = {};
+      try { info = JSON.parse(json || '{}'); } catch (e) {}
+      var name = info.name || '未检测到模型';
+      var sub = info.ready ? '已加载 · ' + name : (info.path ? '已释放 · ' + name : '在「模型」页加载内置模型');
+      subContent.appendChild(card('模型', name, sub));
+    }).catch(function () {
+      subContent.appendChild(card('模型', '未检测到模型', '在「模型」页加载内置模型'));
+    });
   }
 
   function card(title, desc, sub, opts) {

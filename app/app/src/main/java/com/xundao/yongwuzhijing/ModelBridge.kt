@@ -61,6 +61,22 @@ class ModelBridge(private val context: Context) {
     /** 当前已加载的模型目录 */
     fun currentModelPath(): String = loadedPath
 
+    /**
+     * 已有可用模型文件（已加载或磁盘上存在）时，返回文件名去掉 .gguf 的显示名，
+     * 例如 "Qwen3-1.7B-Q4_K_M"。没有则返回空串，由 UI 回退到默认文案。
+     * 这里的名字来自真实文件，不再硬编码版本号——之前写死 0.6B 而实际跑 1.7B，就是文案 bug 的根源。
+     */
+    fun modelDisplayName(): String {
+        val fromLoaded = loadedPath
+        if (fromLoaded.isNotEmpty()) return prettyName(fromLoaded)
+        val modelsDir = File(context.filesDir, "models")
+        findGguf(modelsDir)?.let { return prettyName(it.absolutePath) }
+        return ""
+    }
+
+    private fun prettyName(path: String): String =
+        path.substringAfterLast('/').removeSuffix(".gguf").ifEmpty { "" }
+
     /** 中断当前推理（llama.cpp 没有 stop 接口，这里只能标记；推理会自然跑完或超时） */
     fun stopInference() {
         Stage.mark("stopInference 被调用（llama.cpp 无硬中断）")
@@ -412,7 +428,7 @@ class ModelBridge(private val context: Context) {
     }
 
     /**
-     * OpenAI /v1/chat/completions -> Cactus
+     * OpenAI /v1/chat/completions -> llama.cpp
      */
     private fun chatCompletion(reqBody: String): String {
         if (!modelReady || handle == 0L) {

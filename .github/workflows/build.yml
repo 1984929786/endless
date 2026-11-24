@@ -241,6 +241,17 @@ jobs:
           # 新实现自带词法扫描器（tools/jsstrings.js），不依赖 acorn，四道自检全开。
           node tools/ununderscore.js "$DEST"
 
+          # 【2026-11-24 硬断言】改名完了必须再验一遍「代码区没有 AAA_」。
+          # 事故链：3.7.0 的 ununderscore 把 182 个文件的标识符改成了 AAA_xxx，
+          # 装到手机才报 Export 'AAA_instanceof' is not defined。
+          # 脚本内部已有自检，但脚本自己坏了就没救了 —— 这条断言独立于脚本，走 acorn token 流。
+          ACORN_PATH="$GITHUB_WORKSPACE/openclaw-runtime/node_modules/openclaw/node_modules/acorn" \
+            node tools/selfcheck.js generate
+          ACORN_PATH="$GITHUB_WORKSPACE/openclaw-runtime/node_modules/openclaw/node_modules/acorn" \
+            node tools/selfcheck.js verify
+          ACORN_PATH="$GITHUB_WORKSPACE/openclaw-runtime/node_modules/openclaw/node_modules/acorn" \
+            node tools/check_aaa_clean.js "$DEST"
+
           echo "=== 生成释放清单（App 侧逐条比对，防释放漏文件）==="
           # 但释放函数返回了「成功」。少掉的 4466 个里就有 @sinclair/typebox 之类关键包，
           # 于是 App 启动即报 Cannot find package。
@@ -488,6 +499,25 @@ jobs:
           node "$GITHUB_WORKSPACE/tools/apk_verify.js" "$APK" \
                "$GITHUB_WORKSPACE/app/app/build.gradle"
 
+      # 【2026-11-24 硬断言】拦住「假成功」的空包。
+      # 事故：11-24 早上的 run 状态是 success，产物却只有 1 个条目 / 1381238416 字节，
+      # 里面是个 59 字节的空 zip。三次下载和一堆修复全白做。
+      # 判据不靠「构建没报错」，只看「产物里真的有模型和运行时」。
+      - name: Assert APK not empty
+        run: |
+          set -e
+          APK=$(find app -name "*.apk" | head -1)
+          test -n "$APK"
+          SZ=$(stat -c%s "$APK")
+          echo "APK 字节数: $SZ"
+          test "$SZ" -gt 1000000000 || { echo "✗ APK 只有 $SZ 字节，显然没打进去模型/运行时"; exit 1; }
+          N=$(unzip -l "$APK" | tail -1 | awk '{print $2}')
+          echo "zip 条目数: $N"
+          test "$N" -gt 30000 || { echo "✗ 条目数 $N 太少（应为 3.7 万）"; exit 1; }
+          unzip -l "$APK" | grep -q "assets/models/current/" || { echo "✗ 缺模型目录"; exit 1; }
+          unzip -l "$APK" | grep -q "lib/arm64-v8a/libnode.so" || { echo "✗ 缺 libnode.so"; exit 1; }
+          echo "✓ 产物非空且结构正确"
+
       - name: Upload APK
         # 【2026-11-23 改】原来是 if: always() —— 构建失败也会上传。
         # 后果：`packageDebug` 因 Too many zip entries 失败后，
@@ -499,4 +529,4 @@ jobs:
         with:
           name: endless-debug-apk
           path: app/app/build/outputs/apk/debug/*.apk
-          if-no-files-found: warn
+          if-no-files-found: error
