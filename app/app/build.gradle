@@ -11,8 +11,12 @@ android {
         applicationId "com.xundao.yongwuzhijing"
         minSdk 26
         targetSdk 34
-        versionCode 56
-        versionName "3.7.0"
+        // 【2026-11-25 根因】versionCode 一直是 56，3.7.0→3.9.0 从没递增过。
+        // Android 装同 versionCode 的包会静默跳过（判定「已安装，无需更新」），
+        // 结果连续四版「新包」实际都是旧的 3.7.x 在跑，修复全白搭。
+        // 现在由 CI 用 run_number 自动递增，本地构建用时间戳兜底。
+        versionCode(Integer.parseInt(System.getenv("VERSION_CODE") ?: (System.currentTimeMillis() / 60000L).toString()))
+        versionName(System.getenv("VERSION_NAME") ?: "3.9.0")
 
         ndk {
             abiFilters 'arm64-v8a'

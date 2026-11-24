@@ -391,9 +391,30 @@ jobs:
               -storepass yongwuzhijing -keypass yongwuzhijing \
               -dname "CN=YongWuZhiJing, OU=Dev, O=XunDao, L=CN, ST=CN, C=CN"
           fi
+          # 【2026-11-25】versionCode 必须每次递增，否则 Android 静默跳过安装。
+          export VERSION_CODE=${{ github.run_number }}
+          export VERSION_NAME=3.9.${{ github.run_number }}
+          echo "构建版本: $VERSION_NAME (code $VERSION_CODE)"
           gradle assembleDebug --no-daemon 2>&1 | tee /tmp/build.log > /dev/null || true
           if grep -q "BUILD SUCCESSFUL" /tmp/build.log; then
             echo "✓ 构建成功"
+            # 【2026-11-25】硬校验：产物里的 versionCode 必须等于本次 run_number。
+            # 3.7.0~3.9.0 连续四版都是 56，Android 静默跳过安装，修复全白搭。
+            # 这种错不能靠人眼，必须让构建失败。
+            APK=$(find app/app/build/outputs/apk -name "*.apk" | head -1)
+            BT=$(ls ${ANDROID_HOME}/build-tools | sort -V | tail -1)
+            AAPT=${ANDROID_HOME}/build-tools/$BT/aapt
+            if [ ! -x "$AAPT" ]; then AAPT=${ANDROID_HOME}/build-tools/$BT/aapt2; fi
+            GOT=$($AAPT dump badging "$APK" 2>/dev/null | sed -n "s/.*versionCode=.\([0-9]*\).*/\1/p" | head -1)
+            echo "产物 versionCode=$GOT 期望=$VERSION_CODE"
+            if [ -z "$GOT" ]; then
+              echo "✗ 读不到产物 versionCode，无法确认安装会不会被跳过，拒绝出包。"
+              exit 1
+            fi
+            if [ "$GOT" != "$VERSION_CODE" ]; then
+              echo "✗ versionCode 不符！Android 会静默跳过安装，包等于没出。"
+              exit 1
+            fi
             exit 0
           fi
           echo "=== 构建失败 ==="
