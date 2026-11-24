@@ -37,6 +37,16 @@ function loadAcorn() {
   cands.push(path.join(root, 'node_modules/acorn'));
   // CI 真实位置：workspace/openclaw-runtime/node_modules/openclaw/node_modules/acorn
   cands.push(path.join(__dirname, '..', 'openclaw-runtime', 'node_modules', 'openclaw', 'node_modules', 'acorn'));
+  // 【2026-11-24】CI 现场日志证明 sync-deps 之后只剩 openclaw 自己的嵌套依赖，
+  // 所以 DEST 内部就带着一份 acorn。退一万步，从这里也能拿到。
+  // （sync-deps 清掉了 devDependencies，依赖树是平铺的，所以直接找 DEST/node_modules/acorn）
+  cands.push(path.join(root, 'node_modules', 'acorn'));
+  if (fs.existsSync(path.join(root, 'node_modules'))) {
+    // 有些包把 acorn 嵌套在自己的 node_modules 下，扫一层兜底
+    for (const d0 of fs.readdirSync(path.join(root, 'node_modules'))) {
+      cands.push(path.join(root, 'node_modules', d0, 'node_modules', 'acorn'));
+    }
+  }
   let d = __dirname;
   for (let i = 0; i < 8; i++) {
     cands.push(path.join(d, 'node_modules/acorn'));
