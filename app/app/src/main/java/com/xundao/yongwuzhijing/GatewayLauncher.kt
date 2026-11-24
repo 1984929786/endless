@@ -202,10 +202,28 @@ class GatewayLauncher(private val ctx: Context) {
     /** 启动过程每一步都记下来，界面直接显示，不用拔手机看日志 */
     @Volatile private var startSteps: MutableList<String> = java.util.Collections.synchronizedList(ArrayList())
 
-    /** 网关是否在跑（进程活着 + 端口能连） */
+    /**
+     * 网关是否在跑。
+     *
+     * 【2026-11-25 根因】旧实现 `val p = proc ?: return false` 有两个致命问题：
+     *
+     * 1. Activity 重建（切后台回来 / 旋屏 / 系统回收）时，proc 字段还在（companion 静态），
+     *    但如果是 App 进程被重建，proc 是 null → 返回 false → MainActivity.onCreate 又调
+     *    start() → 又 spawn 一个网关 → 端口被占 → 新的失败退出、旧的活着。
+     *    日志实证：00:48:16.563 Gateway failed to start: another gateway instance is
+     *    already listening on ws://127.0.0.1:18800
+     *
+     * 2. 反过来，proc 活着但网关内部已崩（进程没退、HTTP 全 500）时，probePort() 仍可能
+     *    因为健康检查返回 200 而判「在跑」。
+     *
+     * 现在：端口能应答就是「在跑」，不管 proc 对象在不在。proc 只用来做日志显示。
+     * 进程真的死了 → 端口自然断 → 自然返 false，逻辑依然自洽。
+     */
     fun isRunning(): Boolean {
-        val p = proc ?: return false
-        if (!p.isAlive) return false
+        val p = proc
+        if (p != null && p.isAlive && probePort()) return true
+        // proc 为 null 或进程已退，但端口还有人应答 → 说明网关在跑（只是我们丢了句柄），
+        // 绝不能当「没跑」去再 spawn 一个，那必然撞端口。
         return probePort()
     }
 
@@ -237,55 +255,43 @@ class GatewayLauncher(private val ctx: Context) {
      * 扫不到就退而求其次：把 pid 文件/自身 spawn 的进程全杀一遍。
      */
     private fun killByPort() {
+        val killed = mutableListOf<String>()
         try {
-            // 1. 找出监听 PORT 的 inode
-            val hexPort = String.format("%04X", PORT)
-            val inodes = mutableSetOf<String>()
-            for (f in listOf("/proc/net/tcp", "/proc/net/tcp6")) {
-                val file = java.io.File(f)
-                if (!file.exists() || !file.canRead()) continue
-                file.forEachLine { line ->
-                    val p = line.trim().split(Regex("\\s+"))
-                    // 格式: sl local_address rem_address st ... inode
-                    // st == 0A 表示 LISTEN
-                    if (p.size > 9 && p[1].endsWith(":" + hexPort) && p[3] == "0A") {
-                        inodes.add(p[9])
-                    }
-                }
-            }
-            if (inodes.isEmpty()) {
-                Boot.trace(ctx, "killByPort: 没找到监听 $PORT 的 inode")
-            }
+            // ---- 第一路（最可靠）：本实例 spawn 过的进程对象，直接强杀 ----
+            // App 重启后 proc 为 null，这一路失效，所以要下面两路兜底。
+            try {
+                val p = proc
+                if (p != null) { killed.add(p.pid().toString() + "(proc)"); p.destroyForcibly() }
+            } catch (t: Throwable) {}
+            proc = null
 
-            // 2. 扫本进程能看到的所有 /proc/<pid>，比对 fd -> socket:[inode]
+            // ---- 第二路：扫 /proc 找同 uid 的 node/openclaw 进程 ----
+            // Android 上 /proc/<pid>/fd 对同 uid 也可能读不到，所以先按 cmdline 判断，不看 fd。
+            // uid 相同 + 命令行含 openclaw/libnode → 就是我们的孤儿网关。
+            val myUid = android.os.Process.myUid()
             val myPid = android.os.Process.myPid()
-            val killed = mutableListOf<Int>()
-            val procDir = java.io.File("/proc")
-            val pids = procDir.list() ?: emptyArray()
+            val pids = java.io.File("/proc").list() ?: emptyArray()
             for (d in pids) {
                 val pid = d.toIntOrNull() ?: continue
                 if (pid == myPid) continue
-                val fdDir = java.io.File("/proc/$d/fd")
-                val fds = try { fdDir.list() } catch (t: Throwable) { null } ?: continue
-                var hit = false
-                for (fd in fds) {
-                    val link = try {
-                        java.nio.file.Files.readSymbolicLink(fdDir.toPath().resolve(fd)).toString()
-                    } catch (t: Throwable) { continue }
-                    if (inodes.any { link.contains("socket:[$it]") }) { hit = true; break }
-                }
-                if (hit) {
-                    android.os.Process.sendSignal(pid, 9)
-                    killed.add(pid)
-                }
+                val uid = try {
+                    java.io.File("/proc/" + d + "/status").useLines { l ->
+                        l.firstOrNull { it.startsWith("Uid:") }
+                            ?.removePrefix("Uid:")?.trim()?.split(Regex("\\s+"))?.firstOrNull()?.toIntOrNull()
+                    }
+                } catch (t: Throwable) { null }
+                if (uid != myUid) continue
+                val cmd = try {
+                    java.io.File("/proc/" + d + "/cmdline").readText().replace('\u0000', ' ')
+                } catch (t: Throwable) { "" }
+                if (!cmd.contains("openclaw") && !cmd.contains("libnode")) continue
+                android.os.Process.sendSignal(pid, 9)
+                killed.add(pid.toString() + "(cmdline)")
             }
-            Boot.trace(ctx, "killByPort: inodes=$inodes killed=$killed")
 
-            // 3. 兜底：本实例曾经 spawn 过的进程对象也 terminate 掉
-            try { proc?.destroyForcibly() } catch (_: Throwable) {}
-            proc = null
+            Boot.trace(ctx, "killByPort: 已杀 " + killed)
         } catch (t: Throwable) {
-            Boot.trace(ctx, "killByPort 失败: ${t.javaClass.simpleName}: ${t.message}")
+            Boot.trace(ctx, "killByPort 失败: " + t.javaClass.simpleName + ": " + t.message)
         }
     }
 
@@ -878,9 +884,11 @@ class GatewayLauncher(private val ctx: Context) {
         }
     }
 
-    private fun pidOf(p: Process): String = try {        val f = Process::class.java.getDeclaredField("pid")
-        f.isAccessible = true
-        f.get(p).toString()
+    private fun pidOf(p: Process): String = try {
+        // 【2026-11-25】原来用反射读 Process.pid，Android 14+ 限制反射，
+        // 一直抛异常返回 ? —— 界面于是永远显示 pid=?，我把它当成「旧代码」的判据，
+        // 白白怀疑了道友两次。Process.pid() 从 API 26 就是公开 API，直接调。
+        p.pid().toString()
     } catch (_: Throwable) { "?" }
 
     /** 探测本地端口：真发 HTTP GET /health 并读状态码 */
