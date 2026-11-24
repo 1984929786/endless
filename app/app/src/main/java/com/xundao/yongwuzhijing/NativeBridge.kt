@@ -137,6 +137,24 @@ class NativeBridge(
     @JavascriptInterface
     fun agentEnabled(): Boolean = AgentClient.enabled
 
+    /** 读 API key（设置页显示用，只回前6+后4，不泄露全串） */
+    @JavascriptInterface
+    fun getApiKeyMasked(): String {
+        val k = GatewayLauncher.apiKey()
+        return if (k.isBlank()) "" else k.take(6) + "…" + k.takeLast(4)
+    }
+
+    /** 写 API key。写入后下次启动网关生效（配置重写 + 重启进程）。 */
+    @JavascriptInterface
+    fun setApiKey(key: String): String {
+        val k = key.trim()
+        if (k.length < 20) return "key 太短"
+        GatewayLauncher.setApiKey(k)
+        // 立即重写配置，这样不需重启 App 就生效（进程需用户点重启网关）
+        GatewayLauncher.get(context).rewriteConfig()
+        return "已保存"
+    }
+
     private fun countFiles(dir: java.io.File): Int {
         var n = 0
         try {

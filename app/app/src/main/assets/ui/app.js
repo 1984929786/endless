@@ -512,6 +512,43 @@
 
   function renderSettings() {
     subContent.innerHTML = '';
+
+    // ---- API key（模型能力的前提，没有它网关会 500）----
+    var keyCard = document.createElement('div');
+    keyCard.className = 'card';
+    var kt = document.createElement('div');
+    kt.className = 'card-title';
+    kt.textContent = '模型 API Key';
+    keyCard.appendChild(kt);
+    var kd = document.createElement('div');
+    kd.className = 'card-desc';
+    kd.textContent = 'DeepSeek 的 key。不填就只能用手机本地模型，不能用工具。';
+    keyCard.appendChild(kd);
+
+    var kIn = document.createElement('input');
+    kIn.type = 'text';
+    kIn.placeholder = 'sk-…';
+    kIn.style.cssText = 'width:100%;margin-top:10px;padding:10px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--fg);font-size:13px;box-sizing:border-box;';
+    call('getApiKeyMasked').then(function (m) {
+      if (m) kIn.placeholder = m + '（已保存，重填可覆盖）';
+    });
+    keyCard.appendChild(kIn);
+
+    var kBtn = document.createElement('button');
+    kBtn.className = 'btn-primary';
+    kBtn.style.cssText = 'margin-top:10px;padding:8px 16px;font-size:13px;';
+    kBtn.textContent = '保存';
+    kBtn.onclick = function () {
+      var v = kIn.value.trim();
+      if (!v) { kd.textContent = '请先粘贴 key'; return; }
+      call('setApiKey', v).then(function (r) {
+        kd.textContent = r + '。点「网关 → 重启」后生效';
+        kIn.value = '';
+      }).catch(function (e) { kd.textContent = '失败: ' + e.message; });
+    };
+    keyCard.appendChild(kBtn);
+    subContent.appendChild(keyCard);
+
     subContent.appendChild(card('对话设置', '保留最近 12 条消息作为上下文', ''));
     subContent.appendChild(card('清除所有会话', '删除本机保存的全部对话记录', '', {
       btn: '清除', danger: true, onTap: function () {
