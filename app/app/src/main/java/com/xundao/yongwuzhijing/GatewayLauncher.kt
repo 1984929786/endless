@@ -261,7 +261,7 @@ class GatewayLauncher(private val ctx: Context) {
             // App 重启后 proc 为 null，这一路失效，所以要下面两路兜底。
             try {
                 val p = proc
-                if (p != null) { killed.add(p.pid().toString() + "(proc)"); p.destroyForcibly() }
+                if (p != null) { killed.add(pidOf(p) + "(proc)"); p.destroyForcibly() }
             } catch (t: Throwable) {}
             proc = null
 
@@ -884,12 +884,26 @@ class GatewayLauncher(private val ctx: Context) {
         }
     }
 
-    private fun pidOf(p: Process): String = try {
-        // 【2026-11-25】原来用反射读 Process.pid，Android 14+ 限制反射，
-        // 一直抛异常返回 ? —— 界面于是永远显示 pid=?，我把它当成「旧代码」的判据，
-        // 白白怀疑了道友两次。Process.pid() 从 API 26 就是公开 API，直接调。
-        p.pid().toString()
-    } catch (_: Throwable) { "?" }
+    /**
+     * 取子进程 pid。
+     *
+     * 【2026-11-25 踩坑】p.pid() 编译不过：Process.pid() 是 API 26 加的**默认方法**，
+     * Kotlin 对 java.lang.Process 的映射看不到它 → Unresolved reference: pid。
+     * 走 ProcessHandle（同样 API 26，但走 android.jar 的 type-use 映射能解析）。
+     * 仍失败就反射兜底，最后返回 "?"。
+     */
+    private fun pidOf(p: Process): String {
+        try {
+            val h = p.toHandle()
+            return h.pid().toString()
+        } catch (_: Throwable) {}
+        try {
+            val f = Process::class.java.getDeclaredField("pid")
+            f.isAccessible = true
+            return f.get(p).toString()
+        } catch (_: Throwable) {}
+        return "?"
+    }
 
     /** 探测本地端口：真发 HTTP GET /health 并读状态码 */
     private fun probePort(): Boolean {
