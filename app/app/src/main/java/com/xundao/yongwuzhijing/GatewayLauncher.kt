@@ -886,17 +886,14 @@ class GatewayLauncher(private val ctx: Context) {
 
     /**
      * 取子进程 pid。
-     *
-     * 【2026-11-25 踩坑】p.pid() 编译不过：Process.pid() 是 API 26 加的**默认方法**，
-     * Kotlin 对 java.lang.Process 的映射看不到它 → Unresolved reference: pid。
-     * 走 ProcessHandle（同样 API 26，但走 android.jar 的 type-use 映射能解析）。
-     * 仍失败就反射兜底，最后返回 "?"。
+     * 反射读私有的 int pid 字段——Process.pid()/toHandle() 在 Java 8 target 下不可用。
+     * 失败返回 "?"；此时上层不能拿 pid 区分新旧进程。
      */
     private fun pidOf(p: Process): String {
-        try {
-            val h = p.toHandle()
-            return h.pid().toString()
-        } catch (_: Throwable) {}
+        // 【2026-11-25 CI 实测】p.pid() 和 p.toHandle() 都编译不过：
+        //   Java 8 target 下 java.lang.Process 没有 pid()/toHandle()（API 26 才加，且需 desugaring）。
+        //   唯一跨版本可靠的方式：反射读私有的 int pid 字段。
+        //   失败返回 "?"，但此时 pid 指标本身不可用，上层不能拿它区分新旧进程。
         try {
             val f = Process::class.java.getDeclaredField("pid")
             f.isAccessible = true
