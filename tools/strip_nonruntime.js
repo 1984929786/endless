@@ -37,6 +37,16 @@ const ZIP_ENTRY_LIMIT = 65535;
 const TEST_DIRS = new Set(["test", "tests", "__tests__", "__mocks__", "e2e", "spec"]);
 const KEEP_MD = /^(readme|license|licence|changelog|notice|authors|contributing)/i;
 
+// 【2026-11-26 事故】按扩展名删 .md 把 docs/reference/templates/ 下的
+// AGENTS.md / SOUL.md / TOOLS.md … 全删了 → 运行时抛出
+// Error: Missing workspace template: AGENTS.md → OpenAI 兼容端点 500（114ms，模型都没调到）。
+// 教训：裁剪规则不能只看扩展名，要看「这个目录是不是运行时资产目录」。
+// 这里白名单化：templates 目录下的 .md 一律保留。
+const KEEP_MD_DIRS = ["docs/reference/templates", "templates"];
+function isRuntimeAssetDir(rel) {
+  return KEEP_MD_DIRS.some((d) => rel.includes(d));
+}
+
 function isNonRuntime(rel) {
   const parts = rel.split("/");
   const base = parts[parts.length - 1];
@@ -44,7 +54,11 @@ function isNonRuntime(rel) {
   if (base.endsWith(".map")) return "sourcemap";
   if (base.endsWith(".d.ts") || base.endsWith(".d.mts") || base.endsWith(".d.cts")) return "dts";
   if (base.endsWith(".ts") || base.endsWith(".tsx")) return "src-ts";
-  if (base.endsWith(".md")) return KEEP_MD.test(base) ? null : "docs";
+  if (base.endsWith(".md")) {
+    if (KEEP_MD.test(base)) return null;
+    if (isRuntimeAssetDir(rel)) return null;   // ← 运行时资产目录，不能删
+    return "docs";
+  }
 
   // 目录名命中测试目录（不含顶层 dist/extensions 自身）
   for (let i = 0; i < parts.length - 1; i++) {

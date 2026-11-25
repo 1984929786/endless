@@ -210,6 +210,16 @@ jobs:
           RUNTIME_FILES=$(find "$DEST" -type f | wc -l)
           echo "runtime 文件数：$RUNTIME_FILES（zip 上限 65535）"
           test "$RUNTIME_FILES" -lt 60000 || { echo "✗ 文件数 $RUNTIME_FILES 太接近 65535 上限，拒绝打包"; exit 1; }
+          # 【2026-11-26 硬断言】workspace 模板是运行时必需资产，被裁掉网关就 500。
+          # 事故：strip_nonruntime 按 .md 扩展名删，把 docs/reference/templates/*.md 全删了
+          # → Error: Missing workspace template: AGENTS.md → /v1/chat/completions 500。
+          # 用 dist 里真实的 FALLBACK_TEMPLATE_DIR 解析结果做判据，不写死文件名。
+          TPL="$DEST/docs/reference/templates"
+          test -d "$TPL" || { echo "✗ 缺 docs/reference/templates 目录（strip 或 npm 包装阶段丢了）"; exit 1; }
+          for f in AGENTS.md SOUL.md TOOLS.md IDENTITY.md USER.md HEARTBEAT.md; do
+            test -f "$TPL/$f" || { echo "✗ 缺 workspace 模板 $f，网关会在 chat/completions 抛 Missing workspace template"; exit 1; }
+          done
+          echo "✓ workspace 模板齐全 ($(ls "$TPL" | wc -l) 个)"
           # 清掉 npm 包里的点开头文件（.gitattributes/.gitignore/.npmignore/.package-lock.json 等）。
           # 2026-11-22 现场：清单 52414 条 / 包内 52417 个，唯独
           # node_modules/fast-uri/.gitattributes 没进包 —— aapt 对点开头的
