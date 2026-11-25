@@ -703,7 +703,7 @@ class GatewayLauncher(private val ctx: Context) {
                 // 用户问「你读一下日志」，模型只能答「我无法读取」。
                 // 表现是「模型通了但跟 openclaw 没连上」—— 本质上是个裸聊天壳。
                 append("  \"agents\": { \"defaults\": { ")
-                append("\"workspace\": ").append(org.json.JSONObject.quote(workspaceDir().absolutePath)).append(", ")
+                append("\"workspace\": ").append(org.json.JSONObject.quote(workspaceDir.absolutePath)).append(", ")
                 append("\"model\": { \"primary\": \"").append(currentModel()).append("\" } } },\n")
                 append("  \"tools\": { \"profile\": \"coding\" },\n")
                 append("  \"auth\": { \"profiles\": { \"deepseek:default\": { \"provider\": \"deepseek\", \"mode\": \"api_key\" } } }\n")
@@ -753,7 +753,7 @@ class GatewayLauncher(private val ctx: Context) {
                     agd.put("model", org.json.JSONObject().put("primary", currentModel()))
                     // 老包升级上来的配置也补 workspace —— 已有用户不用卸载重装
                     if (agd.optString("workspace", "").isBlank()) {
-                        agd.put("workspace", workspaceDir().absolutePath)
+                        agd.put("workspace", workspaceDir.absolutePath)
                     }
                     ag.put("defaults", agd)
                     root.put("agents", ag)
