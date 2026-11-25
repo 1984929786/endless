@@ -1,7 +1,7 @@
 name: Publish APK as git chunks
 
 # 目的：artifact 下载通道在部分网络上被阻断（TLS 被中断），
-# 这里把 APK 切成 90MB 分片提交到 apk-chunks 分支，
+# 这里把 APK 切成 8MB 分片提交到 apk-chunks 分支，
 # 手机端用 codeload（实测可达）拉分片重组。
 on:
   workflow_run:
@@ -54,7 +54,7 @@ jobs:
           echo "APK=$APK"
           mkdir -p /tmp/chunks
           cd /tmp/chunks
-          split -b 90m "$APK" part.
+          split -b 8m "$APK" part.
           ls -l | head -20
           echo "分片数: $(ls part.* | wc -l)"
           # 元信息：手机端据此校验
