@@ -561,14 +561,12 @@ jobs:
           echo "✓ 产物非空且结构正确"
 
       - name: Upload APK
-        # 【2026-11-23 改】原来是 if: always() —— 构建失败也会上传。
-        # 后果：`packageDebug` 因 Too many zip entries 失败后，
-        # 后续步骤照样跑，最后上传了一个缺 EOCD 的 1.5GB 残片，
-        # 看起来「构建成功、有产物」，实际是装不了的坏包。
-        # 上传只在真成功时发生；失败就要看到失败，不要假产物。
+        # 【2026-11-26】路径相对仓库根，**不继承**上面步骤的 working-directory。
+        # 上一版跟着改成 app/build/... → 从仓库根找不到 → "No files were found" →
+        # 构建成功、签名成功、产物合格，但 artifact 没传上去，publish_chunks 拿不到包。
         if: success()
         uses: actions/upload-artifact@v4
         with:
           name: endless-debug-apk
-          path: app/build/outputs/apk/debug/*.apk
+          path: app/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
