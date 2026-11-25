@@ -11,6 +11,7 @@
 #include "chat.h"
 #include "common.h"
 #include "llama.h"
+#include "ggml.h"
 
 template<class T>
 static std::string join(const std::vector<T> &values, const std::string &delim) {
@@ -29,7 +30,8 @@ constexpr int   N_THREADS_MIN           = 2;
 constexpr int   N_THREADS_MAX           = 4;
 constexpr int   N_THREADS_HEADROOM      = 2;
 
-constexpr int   DEFAULT_CONTEXT_SIZE    = 8192;
+constexpr int   DEFAULT_CONTEXT_SIZE    = 32768;
+constexpr int   CONTEXT_MIN_USABLE      = 16384;   // OpenClaw 要求最低 16000
 constexpr int   OVERFLOW_HEADROOM       = 4;
 constexpr int   BATCH_SIZE              = 512;
 constexpr float DEFAULT_SAMPLER_TEMP    = 0.3f;
@@ -90,10 +92,16 @@ static llama_context *init_context(llama_model *model, const int n_ctx = DEFAULT
     llama_context_params ctx_params = llama_context_default_params();
     const int trained_context_size = llama_model_n_ctx_train(model);
     if (n_ctx > trained_context_size) {
-        LOGw("%s: Model was trained with only %d context size! Enforcing %d context size...",
+        // 不能降级到 trained_context_size：那是模型训练长度，降下去仍旧不够 OpenClaw 用。
+        // llama.cpp 允许超出训练长度外推（RoPE 缩放），Qwen3 自身支持 32k。
+        LOGw("%s: Model was trained with only %d context size! Requesting %d anyway...",
              __func__, trained_context_size, n_ctx);
     }
     ctx_params.n_ctx = n_ctx;
+    // KV cache 用 Q8_0 量化：32768 上下文下 FP16 要 ~4GB，手机直接 OOM；
+    // Q8_0 约减半到 ~2GB，质量损失极小。V 也跟着量化（llama.cpp 新版支持）。
+    ctx_params.type_k = GGML_TYPE_Q8_0;
+    ctx_params.type_v = GGML_TYPE_Q8_0;
     ctx_params.n_batch = BATCH_SIZE;
     ctx_params.n_ubatch = BATCH_SIZE;
     ctx_params.n_threads = n_threads;
