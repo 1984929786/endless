@@ -401,7 +401,14 @@ jobs:
             # 【2026-11-25】硬校验：产物里的 versionCode 必须等于本次 run_number。
             # 3.7.0~3.9.0 连续四版都是 56，Android 静默跳过安装，修复全白搭。
             # 这种错不能靠人眼，必须让构建失败。
-            APK=$(find app/app/build/outputs/apk -name "*.apk" | head -1)
+            # 【2026-11-26】working-directory 已经是 app/ 模块，路径里不能再带一层 app/。
+            # 上一版写成 app/app/build/... → find 找不到 → 构建成功后反而报错退出（假失败）。
+            APK=$(find app/build/outputs/apk -name "*.apk" | head -1)
+            if [ -z "$APK" ]; then
+              echo "✗ 构建成功但找不到 APK 产物，先列出所有 apk 以判断路径："
+              find . -name "*.apk" -not -path "*/.gradle/*" | head -5
+              exit 1
+            fi
             BT=$(ls ${ANDROID_HOME}/build-tools | sort -V | tail -1)
             AAPT=${ANDROID_HOME}/build-tools/$BT/aapt
             if [ ! -x "$AAPT" ]; then AAPT=${ANDROID_HOME}/build-tools/$BT/aapt2; fi
@@ -563,5 +570,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: endless-debug-apk
-          path: app/app/build/outputs/apk/debug/*.apk
+          path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
