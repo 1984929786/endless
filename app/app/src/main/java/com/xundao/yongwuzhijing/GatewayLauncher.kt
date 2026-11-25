@@ -177,6 +177,12 @@ class GatewayLauncher(private val ctx: Context) {
     private val state: File get() = File(root, "state")
     private val libDir: File get() = File(ctx.filesDir, "lib")
     private val configFile: File get() = File(home, "openclaw.json")
+    /**
+     * agent 工作目录。必须有：没有它 agent 拿不到 AGENTS.md、没有工具指引，
+     * 网关退化成裸模型调用 —— 用户问「读一下日志」它只能答「我无法读取」。
+     * （2026-11-25 事故，与 tools.profile 共同构成「模型通了但没接上 openclaw」）
+     */
+    private val workspaceDir: File get() = File(home, "workspace")
 
     @Volatile private var proc: Process? = null
     @Volatile private var lastError: String = ""
@@ -300,6 +306,71 @@ class GatewayLauncher(private val ctx: Context) {
      * 不重启进程 —— 配置只在网关启动时读，所以界面要提示用户点「重启网关」。
      */
     fun rewriteConfig(): Boolean = writeDefaultConfig()
+
+    /**
+     * 【2026-11-25 新增】把完整网关日志导出到公共 Download 目录。
+     *
+     * 为什么必须有：App 私有目录 (/data/user/0/...) 其他应用（包括寻道）
+     * 根本读不到 —— Android 的 drwx------ + SELinux untrusted_app 域双重卡死，
+     * 给权限也没用。而界面里的日志区会截断，排障时最关键的那行错误
+     * （lane task error: ... ）永远看不到尾巴。
+     *
+     * 还有个更现实的原因：内嵌的小模型（1.7B）不会用工具，让它「读日志」
+     * 只会得到「我无法读取」。所以导出必须由 Kotlin 层直接干，不依赖模型。
+     *
+     * 目标路径：/sdcard/Download/ywzj-gateway-<时间>.log
+     * @return 成功返回目标路径，否则返回 "ERR: ..."
+     */
+    fun exportLog(): String {
+        return try {
+            val src = File(root, "gateway.log")
+            if (!src.exists()) return "ERR: 日志文件不存在 ${src.absolutePath}"
+            // 配置副本一起导出，否则光看日志不知道模型段长什么样
+            val sb = StringBuilder()
+            sb.append("===== gateway.log =====\n")
+            sb.append(src.readText())
+            sb.append("\n===== openclaw.json =====\n")
+            sb.append(try { configFile.readText() } catch (e: Throwable) { "(读不到: ${e.message})" })
+            sb.append("\n===== 环境 =====\n")
+            sb.append("root=").append(root.absolutePath).append('\n')
+            sb.append("workspace=").append(workspaceDir.absolutePath)
+            sb.append(" exists=").append(workspaceDir.exists()).append('\n')
+            sb.append("workspace 文件: ")
+                .append(workspaceDir.list()?.joinToString(",") ?: "(无)").append('\n')
+            val payload = sb.toString()
+            val stamp = java.text.SimpleDateFormat("MMdd-HHmmss", java.util.Locale.US)
+                .format(java.util.Date())
+            val name = "ywzj-gateway-$stamp.log"
+
+            // 【API 29+ 必须走 MediaStore】WRITE_EXTERNAL_STORAGE 已对 targetSdk>=30 无效，
+            // 直接写 /sdcard/Download 会 EACCES。MediaStore 下载区不需要任何运行时权限。
+            val sdk = android.os.Build.VERSION.SDK_INT
+            if (sdk >= 29) {
+                val values = android.content.ContentValues().apply {
+                    put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, name)
+                    put(android.provider.MediaStore.MediaColumns.MIME_TYPE, "text/plain")
+                    put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH,
+                        android.os.Environment.DIRECTORY_DOWNLOADS)
+                }
+                val uri = ctx.contentResolver.insert(
+                    android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, values
+                ) ?: return "ERR: MediaStore 插入失败"
+                ctx.contentResolver.openOutputStream(uri)?.use { it.write(payload.toByteArray()) }
+                    ?: return "ERR: 打不开输出流"
+                Boot.trace(ctx, "日志已导出到 Download/$name")
+                "Download/$name"
+            } else {
+                val dir = File("/sdcard/Download")
+                if (!dir.exists()) dir.mkdirs()
+                val dst = File(dir, name)
+                dst.writeText(payload)
+                Boot.trace(ctx, "日志已导出: ${dst.absolutePath}")
+                dst.absolutePath
+            }
+        } catch (t: Throwable) {
+            "ERR: ${t.javaClass.simpleName}: ${t.message}"
+        }
+    }
 
     /**
      * 启动网关。幂等：已在跑就直接返回 true。
@@ -626,7 +697,15 @@ class GatewayLauncher(private val ctx: Context) {
                 append("  },\n")
                 append("  \"session\": { \"dmScope\": \"per-channel-peer\" },\n")
                 append("  \"models\": ").append(MODELS_JSON).append(",\n")
-                append("  \"agents\": { \"defaults\": { \"model\": { \"primary\": \"").append(currentModel()).append("\" } } },\n")
+                // 【2026-11-25 修】agents 段必须包含 workspace 和 tools.profile。
+                // 事故：只写了 model.primary，没写 workspace / tools → 网关能对话，
+                // 但 agent 没有任何工具（exec/read/write 全无）、也没有 AGENTS.md，
+                // 用户问「你读一下日志」，模型只能答「我无法读取」。
+                // 表现是「模型通了但跟 openclaw 没连上」—— 本质上是个裸聊天壳。
+                append("  \"agents\": { \"defaults\": { ")
+                append("\"workspace\": ").append(org.json.JSONObject.quote(workspaceDir().absolutePath)).append(", ")
+                append("\"model\": { \"primary\": \"").append(currentModel()).append("\" } } },\n")
+                append("  \"tools\": { \"profile\": \"coding\" },\n")
                 append("  \"auth\": { \"profiles\": { \"deepseek:default\": { \"provider\": \"deepseek\", \"mode\": \"api_key\" } } }\n")
                 append("}\n")
             }
@@ -635,12 +714,15 @@ class GatewayLauncher(private val ctx: Context) {
             // 幂等判据必须包含 apiKey 状态，否则「先写配置、后填 key」会永远缺 key
             val key = apiKey()
             val keyOk = if (key.isBlank()) !existing.contains("apiKey") else existing.contains(key)
-            // 四个必须项：token 对得上、chatCompletions 开了、端口对、模型段在
+            // 五个必须项：token 对得上、chatCompletions 开了、端口对、模型段在、
+            // workspace + tools.profile 在（2026-11-25 新增，否则旧包永远补不上工具能力）
             val ok = existing.contains(TOKEN) &&
                     existing.contains("chatCompletions") &&
                     existing.contains("\"port\": $PORT") &&
                     existing.contains("\"providers\"") &&
                     existing.contains(currentModel()) &&
+                    existing.contains("\"workspace\"") &&
+                    existing.contains("\"profile\": \"coding\"") &&
                     keyOk
             if (ok) return true
 
@@ -669,8 +751,16 @@ class GatewayLauncher(private val ctx: Context) {
                     val ag = root.optJSONObject("agents") ?: org.json.JSONObject()
                     val agd = ag.optJSONObject("defaults") ?: org.json.JSONObject()
                     agd.put("model", org.json.JSONObject().put("primary", currentModel()))
+                    // 老包升级上来的配置也补 workspace —— 已有用户不用卸载重装
+                    if (agd.optString("workspace", "").isBlank()) {
+                        agd.put("workspace", workspaceDir().absolutePath)
+                    }
                     ag.put("defaults", agd)
                     root.put("agents", ag)
+                    // tools.profile：缺了它 agent 一件工具都拿不到（2026-11-25 事故）
+                    if (!root.has("tools")) {
+                        root.put("tools", org.json.JSONObject().put("profile", "coding"))
+                    }
                     val au = root.optJSONObject("auth") ?: org.json.JSONObject()
                     val aup = au.optJSONObject("profiles") ?: org.json.JSONObject()
                     aup.put(

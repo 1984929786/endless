@@ -625,7 +625,31 @@
     diag.appendChild(out);
 
     var brow = document.createElement('div');
-    brow.style.cssText = 'display:flex;gap:8px;margin-top:10px;';
+    brow.style.cssText = 'display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;';
+
+    // 【2026-11-25】导出完整日志到 Download。
+    // 存在理由：App 私有目录跨应用读不到（SELinux drwx------ 双重卡死），
+    // 界面日志区又会截断，排障最关键的一行永远看不到尾巴。
+    var bExport = document.createElement('button');
+    bExport.className = 'btn-primary';
+    bExport.style.cssText = 'padding:8px 16px;font-size:13px;';
+    bExport.textContent = '导出日志';
+    bExport.onclick = function () {
+      bExport.disabled = true;
+      call('exportLog').then(function (p) {
+        var s = String(p || '');
+        out.textContent = (s.indexOf('ERR') === 0)
+          ? ('导出失败: ' + s)
+          : ('已导出到手机存储:\n' + s + '\n\n用文件管理器进 Download 就能看到。');
+        out.style.display = '';
+        bExport.disabled = false;
+      }).catch(function (e) {
+        out.textContent = '导出异常: ' + e;
+        out.style.display = '';
+        bExport.disabled = false;
+      });
+    };
+    brow.appendChild(bExport);
 
     var bShow = document.createElement('button');
     bShow.className = 'btn-primary';

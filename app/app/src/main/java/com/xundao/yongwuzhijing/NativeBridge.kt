@@ -241,6 +241,14 @@ class NativeBridge(
     @JavascriptInterface
     fun crashLog(): String = CrashCatcher.read(context)
 
+    /**
+     * 【2026-11-25】导出完整网关日志到 Download。
+     * 返回 "Download/xxx.log" 或 "ERR: ..."。
+     * 不依赖模型会工具 —— Kotlin 直接读文件，绕开 1.7B 模型不会用工具的问题。
+     */
+    @JavascriptInterface
+    fun exportLog(): String = GatewayLauncher.get(context).exportLog()
+
     @JavascriptInterface
     fun lastStage(): String = CrashCatcher.lastStageText(context)
 
