@@ -31,3 +31,4 @@ object Boot {
         } catch (_: Throwable) { /* 日志写不写不影响 App */ }
     }
 }
+
