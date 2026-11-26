@@ -11,10 +11,7 @@ android {
         applicationId "com.xundao.yongwuzhijing"
         minSdk 26
         targetSdk 34
-        // 【2026-11-25 根因】versionCode 一直是 56，3.7.0→3.9.0 从没递增过。
-        // Android 装同 versionCode 的包会静默跳过（判定「已安装，无需更新」），
-        // 结果连续四版「新包」实际都是旧的 3.7.x 在跑，修复全白搭。
-        // 现在由 CI 用 run_number 自动递增，本地构建用时间戳兜底。
+        // CI 用 run_number 自动递增，本地构建用时间戳兜底
         versionCode(Integer.parseInt(System.getenv("VERSION_CODE") ?: (System.currentTimeMillis() / 60000L).toString()))
         versionName(System.getenv("VERSION_NAME") ?: "3.9.0")
 
@@ -24,68 +21,32 @@ android {
     }
 
     buildTypes {
-        debug {
-            minifyEnabled false
-        }
-        release {
-            minifyEnabled false
-        }
+        debug { minifyEnabled false }
+        release { minifyEnabled false }
     }
-
-    // 【2026-11-22 签名说明】
-    // 不在 gradle 里签，因为流水线顺序是「构建 → 重写清单 → 签名」，
-    // 重写 zip 会让 gradle 的签名失效。apksigner 在 CI 最后一步执行（见 build.yml）。
-    // 曾经的 bug：gradle 内签 → 重写清单 → 签名作废 → 手机报「未包含任何证书」。
 
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
     }
 
-    kotlinOptions {
-        jvmTarget = '17'
-    }
+    kotlinOptions { jvmTarget = '17' }
 
     packaging {
-        jniLibs {
-            useLegacyPackaging = true
-        }
+        jniLibs { useLegacyPackaging = true }
     }
 
     androidResources {
-        // 【2026-11-22 实测定论，别再按旧注释改】
-        // 这里的 `!xxx` 放行写法对本项目 **完全无效**：实测 3.4.0 包内以 '_' 开头的
-        // 路径段 = 0 个，以 '.' 开头的路径段 = 0 个。aapt2 始终按内建默认集丢弃：
-        //   .svn .git .ds_store CVS thumbs.db picasa.ini *~ *.scc .* _*
-        //
-        // 所以真正的对策是让文件不触发规则（CI 里做两件事）：
-        //   1. tools/ununderscore.js：`_vendor` → `AAA_vendor`，并改写 JS 引用
-        //   2. find -name '.*' -delete：点开头文件都是 npm 配置，运行时不读，直接删
-        //
-        // 下面这一行保留现状：它不生效，但也不造成伤害，改成别的也不会生效。
-        // 如果哪天真要调整，必须用「包内反查」验证，不能靠读源码猜。
+        // aapt2 对 _* 和 .* 开头的 assets 路径段按内建默认集丢弃
+        // 真正对策在 CI 中处理（ununderscore.js + find -name '.*' -delete）
         ignoreAssetsPattern '!_*:!.*:!.github:!*~:!.svn:!.git:!.ds_store:!*.scc:!CVS:!thumbs.db:!picasa.ini'
-
-        // 模型权重不能被压缩，否则 AAPT 会改坏且解压耗时翻倍
-        noCompress 'weights'
         noCompress 'txt'
         noCompress 'jinja2'
-        // gguf 必须不压缩：1GB 模型压缩时 JVM 直接 Java heap space
-        // （2026-11-21 CI run 44786881843 就是这么挂的）
-        noCompress 'gguf'
-        // 注意：不能全局 noCompress 'json' —— assets/openclaw/node_modules 里有
-        // 上万个小 json，不压缩会让 APK 多出几十 MB。模型目录的 json 体量很小，
-        // 压缩也无所谓（AAPT 改坏的是 gguf 二进制，不是 json 文本）。
     }
-
-    // 模型随 APK 下发：CI 把模型解到 assets/models/current，首次启动释放到私有目录
 }
 
 dependencies {
     implementation 'androidx.appcompat:appcompat:1.6.1'
-    // 【2026-11-22】GatewayService 用 NotificationCompat，不依赖 appcompat 的传递依赖，
-    // 显式声明，避免上游改版本时编译失败。
     implementation 'androidx.core:core-ktx:1.12.0'
     implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1'
-    implementation project(':llama')
 }

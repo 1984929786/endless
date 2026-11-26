@@ -1,8 +1,6 @@
 package com.xundao.yongwuzhijing
 
 import android.annotation.SuppressLint
-import android.content.Intent
-import android.net.Uri
 import android.os.Bundle
 import android.util.Log
 import android.webkit.ConsoleMessage
@@ -14,14 +12,12 @@ import androidx.appcompat.app.AppCompatActivity
 class MainActivity : AppCompatActivity() {
 
     private lateinit var web: WebView
-    private lateinit var bridge: ModelBridge
     private lateinit var native: NativeBridge
     private lateinit var gw: GatewayLauncher
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         Boot.trace(applicationContext, "MainActivity.onCreate 入口")
-        // 必须在 super.onCreate 之前装，才能抓到 onCreate 里的异常
         CrashCatcher.install(applicationContext)
         CrashCatcher.stage("onCreate 开始")
 
@@ -30,14 +26,12 @@ class MainActivity : AppCompatActivity() {
         Boot.trace(applicationContext, "super.onCreate 之后")
 
         try {
-            Boot.trace(applicationContext, "创建 ModelBridge")
-            bridge = ModelBridge(applicationContext)
             Boot.trace(applicationContext, "创建 NativeBridge")
-            native = NativeBridge(applicationContext, bridge)
+            native = NativeBridge(applicationContext)
             Boot.trace(applicationContext, "创建 GatewayLauncher")
             gw = GatewayLauncher.get(applicationContext)
 
-            // 网关在后台线程启动：首次要释放 400MB assets，不能堵主线程
+            // 网关在后台线程启动
             Thread({
                 try {
                     val t0 = System.currentTimeMillis()
@@ -45,12 +39,11 @@ class MainActivity : AppCompatActivity() {
                     val ms = System.currentTimeMillis() - t0
                     Boot.trace(applicationContext, "内嵌网关启动结果=$ok 耗时=${ms}ms")
                     if (ok) {
-                        // 配置里的 token 是 App 写进去的固定值，读回来只为确认一致
                         val cfg = java.io.File(applicationContext.filesDir, "openclaw/home/openclaw.json")
                         val gotToken = AgentClient.loadToken(cfg)
-                        Boot.trace(applicationContext, "网关 token 读取结果=" + gotToken + " | " + gw.diag())
+                        Boot.trace(applicationContext, "网关 token 读取结果=$gotToken | ${gw.diag()}")
                     } else {
-                        Boot.trace(applicationContext, "网关启动失败: " + gw.lastError() + " | " + gw.diag())
+                        Boot.trace(applicationContext, "网关启动失败: ${gw.lastError()} | ${gw.diag()}")
                     }
                 } catch (t: Throwable) {
                     Boot.trace(applicationContext, "网关启动异常: ${t.javaClass.simpleName}: ${t.message}")
@@ -59,9 +52,6 @@ class MainActivity : AppCompatActivity() {
 
             Boot.trace(applicationContext, "创建 WebView")
 
-            // 【2026-11-22 根因修复】申请电池优化白名单。
-            // 华为/小米等国产 ROM 不申请就一定会杀后台进程，网关活不过锁屏。
-            // 放在 UI 线程，但要等窗口就绪后再弹，否则会崩。
             window.decorView.post { gw.requestIgnoreBatteryOptimizations(this) }
             web = WebView(this)
             setContentView(web)
@@ -110,15 +100,13 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         CrashCatcher.stage("onDestroy")
-        // 顺序很重要：先停 WebView，再销毁模型，避免 JS 回调打到已释放的句柄
         try {
             web.loadUrl("about:blank")
             web.removeJavascriptInterface("Native")
             web.destroy()
         } catch (t: Throwable) {
-            Log.w(TAG, "webview 清理异常", t)
+            Log.w(TAG, "清理异常", t)
         }
-        try { bridge.destroyModel() } catch (t: Throwable) { Log.w(TAG, "模型清理异常", t) }
         super.onDestroy()
     }
 
@@ -133,7 +121,6 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onBackPressed() {
-        // 交给 JS 处理返回（关抽屉/子页面），JS 不处理才退出
         web.evaluateJavascript(
             "(function(){try{return window.__onBack&&window.__onBack()}catch(e){return false}})()"
         ) { r ->

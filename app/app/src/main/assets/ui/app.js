@@ -1,10 +1,11 @@
-/* 永无止境 — 前端逻辑 */
+/* 永无止境 — 前端逻辑 v2（StepFun 云端大脑版）
+ * 本地模型推理已移除。AI 能力由 OpenClaw 网关 + StepFun API 提供。
+ */
 (function () {
   'use strict';
 
-  // ---------- 桥接（Android 注入 window.Native） ----------
+  // ---------- 桥接 ----------
   var N = window.Native || null;
-
   function call(fn) {
     if (!N || typeof N[fn] !== 'function') return Promise.reject(new Error('原生接口不可用: ' + fn));
     try {
@@ -16,9 +17,7 @@
       else if (n === 4) r = N[fn](arguments[1], arguments[2], arguments[3]);
       else r = N[fn](arguments[1], arguments[2], arguments[3], arguments[4]);
       return Promise.resolve(r);
-    } catch (e) {
-      return Promise.reject(e);
-    }
+    } catch (e) { return Promise.reject(e); }
   }
 
   // ---------- DOM ----------
@@ -33,93 +32,31 @@
 
   // ---------- 状态 ----------
   var state = {
-    messages: [],      // {role, content}
+    messages: [],
     busy: false,
-    modelReady: false,
-    modelStaged: false,   // 模型文件已释放到磁盘，只差加载进内存
-    agentReady: false,    // OpenClaw 已连接 = 有工具（文件/命令/浏览器）
+    agentReady: false,
     sessionId: Date.now().toString(36),
     streaming: ''
   };
 
   // ---------- 启动 ----------
-  // 关键：进界面不等模型。模型加载放主界面按钮触发，
-  // 这样即使 nativeInit 崩溃，界面也已经能操作（道友 2026-11-20 要求）。
   function boot() {
-    setBoot('正在准备界面…', 20);
-    var st = '';
-    call('lastStage').then(function (s) { st = String(s || ''); }).catch(function () {});
-    // 只查状态，不触发加载
+    setBoot('正在连接 OpenClaw…', 30);
     call('status').then(function (s) {
       s = String(s || '');
-      // agent = OpenClaw 已连接，手已经装上了，不需要等本地模型
       if (s === 'agent') {
-        setBoot('就绪', 100);
-        setTimeout(function () { enterMain(false, false, true); }, 250);
-        return;
+        state.agentReady = true;
+        setBoot('已连接 OpenClaw', 100);
+        setTimeout(function () { enterMain(true); }, 300);
+      } else {
+        setBoot('界面就绪，等待网关…', 100);
+        setTimeout(function () { enterMain(false); }, 300);
       }
-      if (s === 'ready') {
-        // 上次已经加载好（进程还活着），直接进
-        setBoot('就绪', 100);
-        setTimeout(function () { enterMain(true); }, 250);
-        return;
-      }
-      // staged = 模型文件已释放过，只差加载进内存
-      var staged = (s === 'staged');
-      // 其它情况一律进主界面，模型状态由用户手动触发
-      setBoot('界面就绪', 100);
-      setTimeout(function () {
-        enterMain(false, staged);
-        if (st) setReleaseHint('上次启动停在：' + st);
-      }, 250);
     }).catch(function (e) {
-      // 桥接都不可用也别卡启动页
-      bootFail(e && e.message ? e.message : String(e));
+      setBoot('桥接异常：' + (e && e.message ? e.message : String(e)), 0);
+      bootBar.classList.remove('indeterminate');
+      bootSkip.classList.remove('hidden');
     });
-  }
-
-  var pollTimer = null;
-  var pollStart = 0;
-
-  /** 在主界面轮询模型状态（不再占用启动页） */
-  function pollStatus(n) {
-    if (!pollStart) pollStart = Date.now();
-    if (Date.now() - pollStart > 600000) {
-      releaseDone(false, '加载超时（10 分钟）');
-      return;
-    }
-
-    call('status').then(function (s) {
-      s = String(s || '');
-      if (s === 'ready') {
-        releaseDone(true, '模型已就绪');
-        return;
-      }
-      if (s.indexOf('fail:') === 0) {
-        releaseDone(false, s.slice(5));
-        return;
-      }
-      if (s.indexOf('loading:') === 0) {
-        var msg = s.slice(8);
-        setReleaseHint('释放/加载中：' + (msg || '…'));
-        setBoot(msg || '正在加载…', 10 + Math.min(85, n));
-        pollTimer = setTimeout(function () { pollStatus(n + 1); }, 500);
-        return;
-      }
-      // idle：说明还没开始，触发一次
-      call('loadModel').catch(function () {});
-      pollTimer = setTimeout(function () { pollStatus(n + 1); }, 700);
-    }).catch(function (e) {
-      releaseDone(false, e && e.message ? e.message : String(e));
-    });
-  }
-
-  function bootFail(msg) {
-    if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
-    pollStart = 0;
-    setBoot('界面异常：' + msg, 0);
-    bootBar.classList.remove('indeterminate');
-    bootSkip.classList.remove('hidden');
   }
 
   function setBoot(text, pct) {
@@ -133,102 +70,43 @@
     }
   }
 
-  // 启动页：跳过（无条件进主界面）
   bootSkip.onclick = function () {
     setBoot('已跳过', 100);
     enterMain(false);
   };
 
-  // 启动页：重试
   bootRetry.onclick = function () {
     bootRetry.classList.add('hidden');
-    setBoot('正在重试…', 5);
-    pollStart = 0;
-    if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
-    call('loadModel').then(function () {
-      enterMain(false);
-      pollStatus(0);
+    setBoot('正在重试…', 20);
+    call('bootstrap').then(function () {
+      return call('status');
+    }).then(function (s) {
+      state.agentReady = (String(s) === 'agent');
+      setBoot(state.agentReady ? '已连接' : '界面就绪', 100);
+      setTimeout(function () { enterMain(state.agentReady); }, 300);
     }).catch(function (e) {
-      bootFail(e && e.message ? e.message : String(e));
+      setBoot('重试失败：' + (e && e.message ? e.message : String(e)), 0);
+      bootBar.classList.add('indeterminate');
+      bootSkip.classList.remove('hidden');
     });
   };
 
-  /** ready 参数决定徽标，不再无条件当成就绪 */
-  function enterMain(ready, staged, agent) {
+  function enterMain(ready) {
     bootPage.classList.remove('active');
     mainPage.classList.add('active');
-    state.modelReady = !!ready;
-    state.agentReady = !!agent;
+    state.agentReady = !!ready;
 
-    // Agent 可用 = 有手（文件/命令/浏览器/定时），这才是 App 的正式形态。
-    // 本地模型只是断网兜底，不应该是拦路的门槛。
     if (state.agentReady) {
-      setBadge('已连接 OpenClaw', true);
-      setReleaseHint('');
+      setBadge('已连接 OpenClaw · StepFun', true);
       var ab = $('btnRelease'); if (ab) ab.classList.add('hidden');
-      return;
-    }
-
-    if (ready) {
-      setBadge('本地模型就绪', true);
-      setReleaseHint('');
-      var b = $('btnRelease'); if (b) b.classList.add('hidden');
-      return;
-    }
-    setBadge('模型未就绪（离线仅本地）', false);
-    // 模型文件已经释放过了 —— 只需加载进内存，不要再说「释放」
-    // （道友 2026-11-21 反馈：第二次进去还要释放？）
-    var btn = $('btnRelease');
-    if (staged) {
-      state.modelStaged = true;
-      if (btn) { btn.classList.remove('hidden'); btn.textContent = '加载模型'; }
-      setReleaseHint('模型文件已就绪，点一下加载进内存（几秒）');
     } else {
-      state.modelStaged = false;
-      if (btn) { btn.classList.remove('hidden'); btn.textContent = '释放内置模型'; }
+      setBadge('未连接', false);
     }
   }
 
-  // ---------- 模型 ----------
-  function setReleaseHint(t) {
-    var e = $('releaseHint');
-    if (e) e.textContent = t || '';
-  }
-
-  /** 用户点「释放内置模型」/「加载模型」/ 重试时调用 */
-  function loadModel() {
-    if (state.modelReady) return;
-    setBadge('模型加载中…', false);
-    setReleaseHint(state.modelStaged
-      ? '正在加载模型进内存…'
-      : '正在释放内置模型（约 400MB，首次较慢）…');
-    pollStart = 0;
-    if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
-    call('loadModel').then(function () {
-      pollStatus(0);
-    }).catch(function (e) {
-      releaseDone(false, e && e.message ? e.message : String(e));
-    });
-  }
-
-  /** 统一收尾 */
-  function releaseDone(ok, msg) {
-    if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
-    pollStart = 0;
-    if (ok) {
-      state.modelReady = true;
-      setBadge('本地模型就绪', true);
-      setReleaseHint('');
-      var b = $('btnRelease'); if (b) b.classList.add('hidden');
-    } else {
-      state.modelReady = false;
-      setBadge('模型未就绪', false);
-      setReleaseHint('加载失败：' + msg + '（可直接重试，无需重装）');
-      var r = $('btnRelease'); if (r) { r.classList.remove('hidden'); r.textContent = '重试'; }
-    }
-  }
-
+  // ---------- 模型信息（简化） ----------
   function setBadge(text, ready) {
+    if (!modelBadge) return;
     modelBadge.textContent = text;
     modelBadge.classList.toggle('ready', !!ready);
   }
@@ -275,22 +153,15 @@
 
   inputEl.addEventListener('input', autoGrow);
   inputEl.addEventListener('keydown', function (e) {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      send();
-    }
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
   });
   sendBtn.onclick = send;
 
   function send() {
     var text = inputEl.value.trim();
     if (!text || state.busy) return;
-
-    // Agent 可用或有本地模型就放行。只有两者都没有才拦。
-    // （规格书：OpenClaw 是手，本地模型是断网兜底。
-    //   之前只看 modelReady，结果 Agent 已就绪还拦着人不让发——道友 2026-11-21 报的“答不上新闻”就是这个根源）
-    if (!state.agentReady && !state.modelReady) {
-      pushError('正在连接…若持续失败，请先在设置里查看网关状态');
+    if (!state.agentReady) {
+      pushError('正在连接 OpenClaw…若持续失败，请进入「网关」页面查看状态');
       return;
     }
 
@@ -308,16 +179,13 @@
     var bubble = renderMsg('ai', '', { typing: true });
     var t0 = Date.now();
 
-    // 计时器：让用户看到在干活
     var timer = setInterval(function () {
       var s = Math.round((Date.now() - t0) / 1000);
-      bubble.textContent = (state.agentReady ? '处理中（可能正在调用工具）… ' : '思考中… ') + s + 's';
+      bubble.textContent = '处理中（可能正在调用工具）… ' + s + 's';
     }, 500);
 
     var payload = JSON.stringify({ messages: state.messages.slice(-12) });
 
-    // 关键：call() 返回的是 Promise，必须 .then 拿值。
-    // 之前写成 String(call(...)) 会把 Promise 对象转成 "[object Promise]"。
     setTimeout(function () {
       call('complete', payload).then(function (v) {
         finish(String(v == null ? '' : v));
@@ -328,33 +196,18 @@
       function finish(answer, errMsg) {
         clearInterval(timer);
         bubble.classList.remove('typing');
-
         if (!answer) {
-          bubble.textContent = errMsg
-            ? ('生成失败：' + errMsg)
-            : '这次没生成出正文。再发一次试试。';
+          bubble.textContent = errMsg ? ('生成失败：' + errMsg) : '这次没生成出正文。再发一次试试。';
           bubble.parentElement.classList.add('msg-error');
-          appendDiag();
         } else {
           bubble.textContent = answer;
           state.messages.push({ role: 'assistant', content: answer });
           saveSession();
-          // 每轮结束后重测模式：网关可能直上直下
           call('mode').then(function (m) {
             state.agentReady = (String(m) === 'agent');
-          }).catch(function () {});
-          // 成功不贴诊断（2026-11-24）：以前默认把 [诊断] 拼进正文，
-          // 本地模型正常回答时气泡尾巴挂着 src=/HTTP 500，看起来像出错。
-        }
-
-        function appendDiag() {
-          if (window.__diagOn !== true) return;
-          call('diag').then(function (d) {
-            var s = String(d || '');
-            if (s) bubble.textContent += '\n\n[诊断] ' + s;
+            setBadge(state.agentReady ? '已连接 OpenClaw · StepFun' : '未连接', state.agentReady);
           }).catch(function () {});
         }
-
         state.busy = false;
         sendBtn.disabled = false;
         autoGrow();
@@ -372,7 +225,7 @@
         time: Date.now(),
         messages: state.messages
       }));
-    } catch (e) { /* 忽略 */ }
+    } catch (e) {}
   }
 
   function newChat() {
@@ -388,31 +241,15 @@
   }
 
   // ---------- 抽屉 ----------
-  function openDrawer() {
-    drawer.classList.add('show');
-    drawerMask.classList.add('show');
-  }
-  function closeDrawer() {
-    drawer.classList.remove('show');
-    drawerMask.classList.remove('show');
-  }
-
+  function openDrawer() { drawer.classList.add('show'); drawerMask.classList.add('show'); }
+  function closeDrawer() { drawer.classList.remove('show'); drawerMask.classList.remove('show'); }
   $('btnMenu').onclick = openDrawer;
   drawerMask.onclick = closeDrawer;
   $('btnNew').onclick = newChat;
-  $('btnBack').onclick = function () {
-    subpage.classList.remove('show');
-    showPage('chat');
-  };
+  $('btnBack').onclick = function () { subpage.classList.remove('show'); showPage('chat'); };
 
   // ---------- 页面切换 ----------
-  var NAV_TITLE = {
-    history: '历史会话',
-    models: '模型管理',
-    gateway: '网关',
-    settings: '设置',
-    about: '关于'
-  };
+  var NAV_TITLE = { history: '历史会话', gateway: '网关', settings: '设置', about: '关于' };
 
   Array.prototype.forEach.call(document.querySelectorAll('.nav-item'), function (btn) {
     btn.onclick = function () {
@@ -424,10 +261,7 @@
   });
 
   function showPage(name) {
-    if (name === 'chat') {
-      subpage.classList.remove('show');
-      return;
-    }
+    if (name === 'chat') { subpage.classList.remove('show'); return; }
     subTitle.textContent = NAV_TITLE[name] || name;
     subContent.innerHTML = '<div class="empty">加载中…</div>';
     subpage.classList.add('show');
@@ -436,12 +270,12 @@
 
   function renderPage(name) {
     if (name === 'history') return renderHistory();
-    if (name === 'models') return renderModels();
     if (name === 'gateway') return renderGateway();
     if (name === 'settings') return renderSettings();
     if (name === 'about') return renderAbout();
   }
 
+  // ---------- 历史会话 ----------
   function renderHistory() {
     call('listSessions').then(function (json) {
       var list = [];
@@ -490,399 +324,161 @@
     subpage.classList.remove('show');
   }
 
-  function renderModels() {
-    call('modelInfo').then(function (json) {
+  // ---------- 网关页面 ----------
+  function renderGateway() {
+    call('gwInfo').then(function (json) {
       var info = {};
       try { info = JSON.parse(json || '{}'); } catch (e) {}
-      subContent.innerHTML = '';
-      subContent.appendChild(card(
-        '当前模型',
-        (info.name || '本地模型') + ' · 本地运行',
-        info.path ? '位置：' + info.path : ''
-      ));
-      subContent.appendChild(card(
-        '更换模型',
-        '把新的模型文件放到指定目录后，在设置中切换',
-        '首版仅支持内置模型'
-      ));
+      var lines = [];
+      lines.push('<div class="card"><div class="card-title">网关状态</div><div class="card-desc">');
+      lines.push('端口: ' + (info.port || '-'));
+      lines.push('进程: ' + (info.proc ? '运行中' : '未运行'));
+      lines.push('探活: ' + (info.probe ? '正常' : '不通'));
+      lines.push('健康: ' + (info.health || '-'));
+      lines.push('Token: ' + (info.tokenHint || '-'));
+      lines.push('配置: ' + (info.hasConfig ? '存在' : '缺失'));
+      lines.push('运行时: ' + (info.extracted ? '已释放' : '未释放'));
+      lines.push('</div></div>');
+
+      // 诊断步骤
+      if (info.steps) {
+        lines.push('<div class="card"><div class="card-title">启动诊断</div>');
+        lines.push('<pre style="font-size:12px;color:#888;white-space:pre-wrap;word-break:break-all;">' + esc(info.steps) + '</pre>');
+        lines.push('</div>');
+      }
+
+      // 日志尾
+      if (info.logTail) {
+        lines.push('<div class="card"><div class="card-title">网关日志</div>');
+        lines.push('<pre style="font-size:11px;color:#666;white-space:pre-wrap;word-break:break-all;max-height:240px;overflow-y:auto;">' + esc(info.logTail) + '</pre>');
+        lines.push('</div>');
+      }
+
+      // 操作按钮
+      lines.push('<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;">');
+      lines.push('<button class="btn btn-primary" onclick="__gwStart()">启动网关</button>');
+      lines.push('<button class="btn" onclick="__gwTest()">测试连接</button>');
+      lines.push('<button class="btn" onclick="__exportLog()">导出日志</button>');
+      lines.push('<button class="btn" onclick="__exportCrash()">导出崩溃</button>');
+      lines.push('</div>');
+      lines.push('<div id="gwResult" style="margin-top:12px;font-size:13px;color:#888;"></div>');
+
+      subContent.innerHTML = lines.join('');
     }).catch(function () {
-      subContent.innerHTML = '<div class="empty">读取模型信息失败</div>';
+      subContent.innerHTML = '<div class="empty">读取网关信息失败</div>';
     });
   }
 
+  function esc(s) {
+    return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  window.__gwStart = function () {
+    var el = $('gwResult');
+    if (el) el.textContent = '启动中…';
+    call('gwStart').then(function (r) {
+      if (el) el.textContent = String(r);
+      setTimeout(function () { renderPage('gateway'); }, 2000);
+    }).catch(function (e) {
+      if (el) el.textContent = '失败：' + (e && e.message ? e.message : String(e));
+    });
+  };
+
+  window.__gwTest = function () {
+    var el = $('gwResult');
+    if (el) el.textContent = '测试中…';
+    call('gwTest').then(function (r) {
+      if (el) el.textContent = String(r);
+    }).catch(function (e) {
+      if (el) el.textContent = '失败：' + (e && e.message ? e.message : String(e));
+    });
+  };
+
+  window.__exportLog = function () {
+    call('exportLog').then(function (r) {
+      alert('日志已导出：' + String(r));
+    }).catch(function (e) {
+      alert('导出失败：' + (e && e.message ? e.message : String(e)));
+    });
+  };
+
+  window.__exportCrash = function () {
+    call('exportCrash').then(function (r) {
+      alert(String(r));
+    }).catch(function (e) {
+      alert('导出失败：' + (e && e.message ? e.message : String(e)));
+    });
+  };
+
+  // ---------- 设置页面 ----------
   function renderSettings() {
-    subContent.innerHTML = '';
+    call('getApiKeyMasked').then(function (masked) {
+      masked = String(masked || '');
+      var hasKey = masked.length > 0;
 
-    // ---- 模型选择：本地 / 云端 ----
-    // 本地是 App 自带的（llama.cpp，离线、不花钱）；云端要填 key。
-    var mc = document.createElement('div');
-    mc.className = 'card';
-    var mt = document.createElement('div');
-    mt.className = 'card-title';
-    mt.textContent = '模型';
-    mc.appendChild(mt);
+      var html = '<div class="card"><div class="card-title">StepFun API Key</div>';
+      html += '<div class="card-desc">填入你的 StepFun API Key 以启用云端 AI</div>';
+      html += '<input id="apiKeyInput" type="text" placeholder="sk-..." style="width:100%;margin-top:8px;padding:10px;background:#1a1d24;border:1px solid #2a2e38;color:#e0e0e0;border-radius:8px;font-size:14px;" value="' + esc(masked) + '">';
+      html += '<button class="btn btn-primary" style="margin-top:10px;" onclick="__saveKey()">保存 Key</button>';
+      html += '</div>';
 
-    var md = document.createElement('div');
-    md.className = 'card-desc';
-    md.textContent = '本地模型：手机自己跑，不联网、不花钱，工具也能用。云端模型：需要 API key，更强但按量计费。';
-    mc.appendChild(md);
+      html += '<div class="card"><div class="card-title">关于</div>';
+      html += '<div class="card-desc">永无止境 v3.9<br>OpenClaw 网关 + StepFun API<br>包名 com.xundao.yongwuzhijing</div>';
+      html += '</div>';
 
-    var mRow = document.createElement('div');
-    mRow.style.cssText = 'display:flex;gap:8px;margin-top:10px;';
-    var bLocal = document.createElement('button');
-    var bCloud = document.createElement('button');
-    [bLocal, bCloud].forEach(function (b) {
-      b.style.cssText = 'flex:1;padding:9px 0;font-size:13px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--fg);';
+      subContent.innerHTML = html;
+    }).catch(function () {
+      subContent.innerHTML = '<div class="empty">读取设置失败</div>';
     });
-    bLocal.textContent = '本地（默认）';
-    bCloud.textContent = '云端';
-    mRow.appendChild(bLocal);
-    mRow.appendChild(bCloud);
-    mc.appendChild(mRow);
-
-    function paintModel(useCloud) {
-      bLocal.style.background = useCloud ? 'var(--bg)' : 'var(--accent, #2b7de9)';
-      bLocal.style.color = useCloud ? 'var(--fg)' : '#fff';
-      bCloud.style.background = useCloud ? 'var(--accent, #2b7de9)' : 'var(--bg)';
-      bCloud.style.color = useCloud ? '#fff' : 'var(--fg)';
-    }
-    call('getUseCloud').then(paintModel).catch(function () { paintModel(false); });
-
-    bLocal.onclick = function () {
-      call('setUseCloud', false).then(function (r) {
-        md.textContent = r;
-        paintModel(false);
-      }).catch(function (e) { md.textContent = '失败: ' + e.message; });
-    };
-    bCloud.onclick = function () {
-      call('setUseCloud', true).then(function (r) {
-        md.textContent = r;
-        paintModel(String(r).indexOf('已切到云端') === 0);
-      }).catch(function (e) { md.textContent = '失败: ' + e.message; });
-    };
-    subContent.appendChild(mc);
-
-    // ---- API key（模型能力的前提，没有它网关会 500）----
-    var keyCard = document.createElement('div');
-    keyCard.className = 'card';
-    var kt = document.createElement('div');
-    kt.className = 'card-title';
-    kt.textContent = '模型 API Key';
-    keyCard.appendChild(kt);
-    var kd = document.createElement('div');
-    kd.className = 'card-desc';
-    kd.textContent = '可选。不填就用手机自己的本地模型（Qwen3-1.7B，离线可用）；填了才用云端模型和工具能力。';
-    keyCard.appendChild(kd);
-
-    var kIn = document.createElement('input');
-    kIn.type = 'text';
-    kIn.placeholder = 'sk-…';
-    kIn.style.cssText = 'width:100%;margin-top:10px;padding:10px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--fg);font-size:13px;box-sizing:border-box;';
-    call('getApiKeyMasked').then(function (m) {
-      if (m) kIn.placeholder = m + '（已保存，重填可覆盖）';
-    });
-    keyCard.appendChild(kIn);
-
-    var kBtn = document.createElement('button');
-    kBtn.className = 'btn-primary';
-    kBtn.style.cssText = 'margin-top:10px;padding:8px 16px;font-size:13px;';
-    kBtn.textContent = '保存';
-    kBtn.onclick = function () {
-      var v = kIn.value.trim();
-      if (!v) { kd.textContent = '请先粘贴 key'; return; }
-      call('setApiKey', v).then(function (r) {
-        kd.textContent = r + '。点「网关 → 重启」后生效';
-        kIn.value = '';
-      }).catch(function (e) { kd.textContent = '失败: ' + e.message; });
-    };
-    keyCard.appendChild(kBtn);
-    subContent.appendChild(keyCard);
-
-    subContent.appendChild(card('对话设置', '保留最近 12 条消息作为上下文', ''));
-    subContent.appendChild(card('清除所有会话', '删除本机保存的全部对话记录', '', {
-      btn: '清除', danger: true, onTap: function () {
-        call('clearSessions').then(function () {
-          subContent.querySelectorAll('.card')[1].querySelector('.card-desc').textContent = '已清除';
-        });
-      }
-    }));
-
-    // 崩溃诊断
-    var diag = document.createElement('div');
-    diag.className = 'card';
-    var dt = document.createElement('div');
-    dt.className = 'card-title';
-    dt.textContent = '崩溃日志';
-    diag.appendChild(dt);
-
-    var dd = document.createElement('div');
-    dd.className = 'card-desc';
-    dd.textContent = '如果应用闪退过，这里能看到原因';
-    diag.appendChild(dd);
-
-    var out = document.createElement('pre');
-    out.style.cssText = 'margin-top:10px;padding:10px;background:var(--bg);border-radius:8px;font-size:11px;line-height:1.5;max-height:240px;overflow:auto;white-space:pre-wrap;word-break:break-all;display:none;';
-    diag.appendChild(out);
-
-    var brow = document.createElement('div');
-    brow.style.cssText = 'display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;';
-
-    // 【2026-11-25】导出完整日志到 Download。
-    // 存在理由：App 私有目录跨应用读不到（SELinux drwx------ 双重卡死），
-    // 界面日志区又会截断，排障最关键的一行永远看不到尾巴。
-    var bExport = document.createElement('button');
-    bExport.className = 'btn-primary';
-    bExport.style.cssText = 'padding:8px 16px;font-size:13px;';
-    bExport.textContent = '导出日志';
-    bExport.onclick = function () {
-      bExport.disabled = true;
-      call('exportLog').then(function (p) {
-        var s = String(p || '');
-        out.textContent = (s.indexOf('ERR') === 0)
-          ? ('导出失败: ' + s)
-          : ('已导出到手机存储:\n' + s + '\n\n用文件管理器进 Download 就能看到。');
-        out.style.display = '';
-        bExport.disabled = false;
-      }).catch(function (e) {
-        out.textContent = '导出异常: ' + e;
-        out.style.display = '';
-        bExport.disabled = false;
-      });
-    };
-    brow.appendChild(bExport);
-
-    var bShow = document.createElement('button');
-    bShow.className = 'btn-primary';
-    bShow.style.cssText = 'padding:8px 16px;font-size:13px;';
-    bShow.textContent = '查看';
-    bShow.onclick = function () {
-      call('lastStage').then(function (st) {
-        call('crashLog').then(function (log) {
-          call('memInfo').then(function (mem) {
-            var txt = '最后阶段: ' + (st || '(无)') + '\n\n内存: ' + (mem || '?') + '\n\n' + (log || '(无崩溃记录)');
-            out.textContent = txt;
-            out.style.display = '';
-          }).catch(function () {
-            out.textContent = '最后阶段: ' + (st || '(无)') + '\n\n' + (log || '(无崩溃记录)');
-            out.style.display = '';
-          });
-        });
-      });
-    };
-
-    var bCopy = document.createElement('button');
-    bCopy.className = 'btn-primary';
-    bCopy.style.cssText = 'padding:8px 16px;font-size:13px;background:var(--bg-3);';
-    bCopy.textContent = '复制';
-    bCopy.onclick = function () {
-      if (!out.textContent) { bShow.onclick(); setTimeout(bCopy.onclick, 400); return; }
-      var ta = document.createElement('textarea');
-      ta.value = out.textContent;
-      document.body.appendChild(ta);
-      ta.select();
-      try { document.execCommand('copy'); bCopy.textContent = '已复制'; } catch (e) {}
-      document.body.removeChild(ta);
-      setTimeout(function () { bCopy.textContent = '复制'; }, 1500);
-    };
-
-    brow.appendChild(bShow);
-    brow.appendChild(bCopy);
-    diag.appendChild(brow);
-    subContent.appendChild(diag);
   }
 
-  // ---------- 网关 ----------
-  // 目的：不用翻日志就知道「手」到底连上没有。
-  // 硬事实一共四层，从外到内：
-  //   ① 进程活没活 ② 端口通不通 ③ token 对不对（/health 401 vs 200）
-  //   ④ 一轮真实对话成不成（真跑 agent，会花几秒）
-  function renderGateway() {
-    subContent.innerHTML = '';
-
-    var statusCard = card('内嵌网关', '正在检查…', '');
-    subContent.appendChild(statusCard);
-    var descEl = statusCard.querySelector('.card-desc');
-
-    var detailCard = document.createElement('div');
-    detailCard.className = 'card';
-    var dTitle = document.createElement('div');
-    dTitle.className = 'card-title';
-    dTitle.textContent = '链路明细';
-    detailCard.appendChild(dTitle);
-    var dPre = document.createElement('pre');
-    dPre.style.cssText = 'margin-top:10px;padding:10px;background:var(--bg);border-radius:8px;' +
-      'font-size:11px;line-height:1.6;max-height:240px;overflow:auto;' +
-      'white-space:pre-wrap;word-break:break-all;color:var(--fg-dim);';
-    dPre.textContent = '点「刷新」查看';
-    detailCard.appendChild(dPre);
-    subContent.appendChild(detailCard);
-
-    // 测试对话
-    var testCard = card('测试对话', '真的发一句话给网关，看回不回', '', {
-      btn: '测试',
-      onTap: function () {
-        testCard.querySelector('.card-desc').textContent = '正在等回复…';
-        call('gwTest').then(function (r) {
-          var s = String(r || '');
-          testCard.querySelector('.card-desc').textContent = s.slice(0, 200);
-        }).catch(function (e) {
-          testCard.querySelector('.card-desc').textContent = '失败: ' + e.message;
-        });
-      }
-    });
-    subContent.appendChild(testCard);
-
-    // Agent 开关
-    var toggleCard = card('工具能力', '关掉后只用语内置模型，不连网关', '', {
-      btn: '切换',
-      onTap: function () {
-        call('agentEnabled').then(function (on) {
-          call('setAgentEnabled', !on).then(function () {
-            toggleCard.querySelector('.card-desc').textContent = !on ? '已开启（有工具）' : '已关闭（仅聊天）';
-            refresh();
-          });
-        });
-      }
-    });
-    subContent.appendChild(toggleCard);
-
-    // 启动/重启网关
-    var startCard = card('启动网关', '没跑起来就点这里。首次要释放运行时，可能几十秒', '', {
-      btn: '启动',
-      onTap: function () {
-        startCard.querySelector('.card-desc').textContent = '正在启动，请稍等…';
-        call('gwStart').then(function (r) {
-          startCard.querySelector('.card-desc').textContent = String(r || '').slice(0, 200);
-          refresh();
-        }).catch(function (e) {
-          startCard.querySelector('.card-desc').textContent = '异常: ' + e.message;
-        });
-      }
-    });
-    subContent.appendChild(startCard);
-
-    var refreshCard = card('刷新状态', '', '', {
-      btn: '刷新',
-      onTap: refresh
-    });
-    subContent.appendChild(refreshCard);
-
-    function refresh() {
-      descEl.textContent = '正在检查…';
-      call('gwInfo').then(function (json) {
-        var o;
-        try { o = JSON.parse(String(json || '{}')); } catch (e) { o = {}; }
-        var alive = o.proc === true;
-        var probe = o.probe === true;
-        var health = String(o.health || '?');
-        var head = alive ? (probe ? '运行中' : '进程在，端口不通') : '未运行';
-        descEl.textContent = head + '  ·  ' + health + '  ·  端口 ' + (o.port || '?');
-        // 一直没跑起来就把启动轨迹摆到卡片上，不用展开明细
-        if (!alive && !probe) {
-          descEl.textContent = head + '  ·  ' + (o.steps || '未尝试启动');
-        }
-        var lines = [];
-        lines.push('进程: ' + (alive ? '活' : '停'));
-        lines.push('端口: ' + (o.port || '?') + ' → ' + health);
-        lines.push('端点: /v1/chat/completions ' + (o.chatEndpoint ? '已开' : '未开'));
-        lines.push('token: ' + (o.tokenHint || '(空)'));
-        lines.push('运行时已释放: ' + (o.extracted ? '是' : '否'));
-        lines.push('配置文件: ' + (o.hasConfig ? '有' : '无'));
-        lines.push('启动轨迹: ' + (o.steps || '-'));
-        lines.push('运行时文件数: ' + (o.runtimeFiles != null ? o.runtimeFiles : '?'));
-        lines.push('路径: ' + (o.home || '?'));
-        lines.push('上一轮: ' + (o.lastNote || '-'));
-        if (o.err) lines.push('错误: ' + o.err);
-        if (o.logTail) { lines.push(''); lines.push('— 网关日志尾部 —'); lines.push(o.logTail); }
-        dPre.textContent = lines.join('\n');
-        call('agentEnabled').then(function (on) {
-          toggleCard.querySelector('.card-desc').textContent = on ? '已开启（有工具）' : '已关闭（仅聊天）';
-        }).catch(function () {});
-      }).catch(function (e) {
-        descEl.textContent = '读取失败: ' + e.message;
-      });
+  window.__saveKey = function () {
+    var input = $('apiKeyInput');
+    if (!input) return;
+    var key = input.value.trim();
+    if (!key || key.indexOf('…') > 0) {
+      alert('请输入完整的 API Key');
+      return;
     }
-    refresh();
-  }
+    call('setApiKey', key).then(function (r) {
+      alert(String(r));
+    }).catch(function (e) {
+      alert('保存失败：' + (e && e.message ? e.message : String(e)));
+    });
+  };
 
+  // ---------- 关于 ----------
   function renderAbout() {
     subContent.innerHTML = '';
-    subContent.appendChild(card('永无止境', '版本 1.2.0', '本地智能助手，所有对话留在本机'));
-    subContent.appendChild(card('引擎', 'llama.cpp · GGUF', '为移动设备优化的本地推理引擎'));
-    // 模型名来自 modelInfo（由真实 .gguf 文件名推得），不再写死型号——之前写死 0.6B 而实际跑 1.7B 就是文案 bug
-    call('modelInfo').then(function (json) {
-      var info = {};
-      try { info = JSON.parse(json || '{}'); } catch (e) {}
-      var name = info.name || '未检测到模型';
-      var sub = info.ready ? '已加载 · ' + name : (info.path ? '已释放 · ' + name : '在「模型」页加载内置模型');
-      subContent.appendChild(card('模型', name, sub));
-    }).catch(function () {
-      subContent.appendChild(card('模型', '未检测到模型', '在「模型」页加载内置模型'));
-    });
+    subContent.appendChild(card('永无止境', 'v3.9.0', 'OpenClaw 网关 + StepFun 云端大脑'));
+    subContent.appendChild(card('架构', 'App = 面板', 'OpenClaw = 手 · StepFun API = 脑'));
+    subContent.appendChild(card('包名', 'com.xundao.yongwuzhijing', '内嵌网关端口 18800'));
   }
 
-  function card(title, desc, sub, opts) {
-    opts = opts || {};
-    var d = document.createElement('div');
-    d.className = 'card';
-
-    var row = document.createElement('div');
-    row.className = 'card-row';
-
-    var left = document.createElement('div');
-    left.style.flex = '1';
-    left.style.minWidth = '0';
-
+  function card(title, desc, sub) {
+    var c = document.createElement('div');
+    c.className = 'card';
     var t = document.createElement('div');
     t.className = 'card-title';
     t.textContent = title;
-    left.appendChild(t);
-
+    c.appendChild(t);
     if (desc) {
-      var de = document.createElement('div');
-      de.className = 'card-desc';
-      de.textContent = desc;
-      left.appendChild(de);
+      var d = document.createElement('div');
+      d.className = 'card-desc';
+      d.textContent = desc;
+      c.appendChild(d);
     }
     if (sub) {
-      var se = document.createElement('div');
-      se.className = 'card-desc';
-      se.style.opacity = '.65';
-      se.textContent = sub;
-      left.appendChild(se);
+      var s = document.createElement('div');
+      s.className = 'card-desc';
+      s.style.fontSize = '12px';
+      s.style.color = '#666';
+      s.textContent = sub;
+      c.appendChild(s);
     }
-
-    row.appendChild(left);
-
-    if (opts.btn) {
-      var b = document.createElement('button');
-      b.className = 'btn-primary' + (opts.danger ? ' btn-danger' : '');
-      b.style.padding = '8px 16px';
-      b.style.fontSize = '13px';
-      b.textContent = opts.btn;
-      b.onclick = opts.onTap;
-      row.appendChild(b);
-    }
-
-    d.appendChild(row);
-    return d;
+    return c;
   }
-
-  // ---------- 返回键 ----------
-  window.__onBack = function () {
-    if (drawer.classList.contains('show')) { closeDrawer(); return true; }
-    if (subpage.classList.contains('show')) { subpage.classList.remove('show'); return true; }
-    return false;
-  };
-
-  // 主界面的「释放内置模型」按钮
-  var releaseBtn = $('btnRelease');
-  if (releaseBtn) releaseBtn.onclick = function () { loadModel(); };
 
   // ---------- 启动 ----------
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', boot);
-  } else {
-    boot();
-  }
+  window.addEventListener('DOMContentLoaded', boot);
 })();

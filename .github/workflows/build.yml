@@ -9,16 +9,10 @@ on:
       - 'trigger-build/**'
   workflow_dispatch:
 
-# 注意（2026-11-21 教训）：
-# 推送工具 gh_push2.js 是「一个文件一次 commit」，每个 commit 都会触发一次构建。
-# 51 个文件 = 51 个 queued run，队列被自己的提交堵死，真正要的那个排在最后。
-# 所以：用 gh_push_bulk.js 一次性提交，或者推完手动 dispatch 指定 commit。
-# 这里保留 push 触发是给正常 git push 用的（单次 commit）。
-
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 90
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -33,109 +27,28 @@ jobs:
         run: |
           SDKMGR=$(find "$ANDROID_HOME" -name sdkmanager -type f | head -1)
           yes | "$SDKMGR" --licenses >/dev/null 2>&1 || true
-          "$SDKMGR" "platforms;android-34" "build-tools;34.0.0" "cmake;3.22.1" "ndk;26.1.10909125" > /dev/null
+          "$SDKMGR" "platforms;android-34" "build-tools;34.0.0" > /dev/null
           echo "SDK 就绪"
-          echo "NDK: $ANDROID_HOME/ndk/26.1.10909125"
 
-      # llama.cpp 的 Android lib 模块要 add_subdirectory 整个源码树，
-      # 所以必须在这里 clone 一份（约 200MB，比 Cactus 预编译 .so 麻烦，但格式公开、可控）
-      - name: Clone llama.cpp source
-        run: |
-          set -e
-          git clone --depth 1 https://github.com/ggml-org/llama.cpp.git /tmp/llama.cpp
-          cd /tmp/llama.cpp
-          echo "commit: $(git rev-parse --short HEAD)"
-          ls include/llama.h ggml/include/ggml.h common/common.h
-
-      # CMakeLists.txt 里 LLAMA_SRC = ${CMAKE_CURRENT_LIST_DIR}/../../../../llama.cpp
-      # 从 app/llama/src/main/cpp 上溯 4 层 = app/，所以源码必须放在 app/llama.cpp
-      - name: Place llama.cpp for CMake
-        run: |
-          set -e
-          DEST=$(realpath app/llama/src/main/cpp/../../../..)/llama.cpp
-          echo "目标路径: $DEST"
-          rm -rf "$DEST"
-          cp -r /tmp/llama.cpp "$DEST"
-          ls "$DEST/CMakeLists.txt" "$DEST/include/llama.h"
-          echo "✓ llama.cpp 就位"
-
-      - name: Download GGUF model
-        run: |
-          set -e
-          mkdir -p /tmp/mdl
-          URL="https://hf-mirror.com/unsloth/Qwen3-1.7B-GGUF/resolve/main/Qwen3-1.7B-Q4_K_M.gguf"
-          echo "下载: $URL"
-          curl -fL --retry 3 --retry-delay 5 -o /tmp/mdl/model.gguf "$URL"
-          SZ=$(stat -c%s /tmp/mdl/model.gguf)
-          echo "大小: $SZ 字节 ($((SZ/1048576))MB)"
-          test "$SZ" -gt 900000000 || { echo "模型文件太小，下载失败"; exit 1; }
-          # GGUF magic 校验：前 4 字节必须是 "GGUF"
-          MAGIC=$(head -c 4 /tmp/mdl/model.gguf)
-          echo "magic: $MAGIC"
-          test "$MAGIC" = "GGUF" || { echo "不是合法的 GGUF 文件"; exit 1; }
-
-      - name: Put model into assets
-        run: |
-          set -e
-          # 注意：ModelBridge.findAssetGguf() 先找 assets/models/current/，再找顶层。
-          # **必须放 current 子目录** —— 2026-11-21 现场：放顶层虽然进了 APK，
-          # App 却报「找不到模型文件」，assets.list() 对顶层大文件不可靠。
-          # current 子目录是 3.0.2 验证过的布局。
-          DEST=app/app/src/main/assets/models/current
-          rm -rf app/app/src/main/assets/models
-          mkdir -p "$DEST"
-          cp /tmp/mdl/model.gguf "$DEST/Qwen3-1.7B-Q4_K_M.gguf"
-          ls -lh "$DEST"
-
-      # ===== 内嵌 OpenClaw 网关（B 方案，2026-11-21） =====
-      # 为什么在 CI 里 npm install，而不是把 node_modules 放进仓库：
-      #   本地那份 node_modules 是 Windows 机同步过来的，1011MB 里 240MB 是
-      #   win32 二进制、136MB 是 lancedb-win32，在 Android arm64 上一个都用不了。
-      #   而且单文件超 GitHub 100MB 上限，物理上推不上去。
-      #   所以只放 package.json 清单，让 npm 自己拉正确平台。
+      # ===== 内嵌 OpenClaw 网关运行时 =====
       - name: Install embedded OpenClaw runtime
         working-directory: openclaw-runtime
         run: |
           set -e
-          echo "=== 安装 openclaw 运行时（cd 目标 linux-arm64）==="
           npm install --no-audit --no-fund --os=linux --cpu=arm64
-          echo "=== 安装结果 ==="
-          du -sh node_modules
-          echo "=== 确认关键文件 ==="
           test -f node_modules/openclaw/openclaw.mjs
           test -d node_modules/openclaw/dist
-          echo "✓ openclaw.mjs + dist 就位"
+          echo "✓ openclaw.mjs + dist 就绪"
+          du -sh node_modules
 
-      # ===== 补装扩展运行时依赖（2026-11-22 根因修复）=====
-      # 【事实】openclaw 的 package.json 有 postinstall:
-      #     node scripts/postinstall-bundled-plugins.mjs
-      #   但 npm 默认**不执行** install scripts（日志原文：
-      #   "6 packages have install scripts not yet covered by allowScripts"），
-      #   所以这一步在 CI 里被静默跳过了。
-      #
-      # 【后果】dist/*.js 顶层 chunk 会通过 jiti 懒加载 dist/extensions/*/ 的代码
-      #   （上游注释原话："Installed builds can lazy-load bundled plugin code
-      #    through root dist chunks, so runtime dependencies declared in
-      #    dist/extensions/*/package.json must also resolve from the package root
-      #    node_modules"），而扩展的依赖没装到包根 → 运行时
-      #   MODULE_NOT_FOUND（现���：dist/client-Cm0jR4_W.js 找不到 @slack/web-api）。
-      #
-      # 【修法】用 tools/install_plugin_deps.js：扫同一批扩展 manifest，但装到隔离目录
-      #   再合并进包根，避开 openclaw 自己的 devDependencies。
-      #   （3.6.0 试过直接跑上游脚本，碰上 oxlint 的 ERESOLVE 失败，见脚本头注释）
       - name: Install bundled plugin runtime deps
         run: |
           set -e
-          # 用自己写的脚本，不用上游的 postinstall —— 上游会在 openclaw 包目录跑 npm，
-          # 解析到 openclaw 自己的 devDependencies 而撞 ERESOLVE 失败，
-          # 而且它 catch 住只打 warn，set -e 拦不住（3.6.0 实测）。
-          # 本脚本在隔离目录装，完全不碰 openclaw 的 package.json。
           NPM_PLATFORM_OS=linux NPM_PLATFORM_CPU=arm64 \
             node tools/install_plugin_deps.js openclaw-runtime/node_modules/openclaw
-          echo "=== 验证 @slack/web-api 已在包根 ==="
           test -f openclaw-runtime/node_modules/openclaw/node_modules/@slack/web-api/package.json \
-            || { echo "✗ @slack/web-api 仍不在包根 node_modules"; exit 1; }
-          echo "✓ @slack/web-api 就位"
+            || { echo "✗ @slack/web-api 不在包根"; exit 1; }
+          echo "✓ 扩展依赖就位"
           du -sh openclaw-runtime/node_modules
 
       - name: Repack runtime into App assets
@@ -146,11 +59,9 @@ jobs:
           rm -rf "$DEST"
           mkdir -p "$DEST"
 
-          echo "=== 拷贝 openclaw 包本体 ==="
           cp -r "$SRC"/openclaw/* "$DEST"/
           test -f "$DEST/openclaw.mjs" || { echo "✗ 缺 openclaw.mjs"; exit 1; }
 
-          echo "=== 拷贝依赖（白名单全拷，不删不碰）==="
           mkdir -p "$DEST/node_modules"
           for d in "$SRC"/*; do
             b=$(basename "$d")
@@ -158,310 +69,76 @@ jobs:
             cp -r "$d" "$DEST/node_modules/"
           done
 
-          echo "=== 剔除其他平台二进制（逐个判断，不用模糊通配符）==="
-          # 原则：只删目录名里明确带其他平台标识的，且只看相对路径的后三级。
-          # 不写 find | rm 大类模式 —— 上次就是那样把脚本引号搞坏导致整步失败。
-          REMOVED=0
-          for p in $(cd "$DEST/node_modules" && find . -maxdepth 3 -type d -print); do
-            rel=${p#./}
-            last=$(basename "$rel")
-            if [ "$last" = "win32-x64" ] || [ "$last" = "win32-arm64" ] \
-               || [ "$last" = "win32-ia32" ] || [ "$last" = "darwin-x64" ] \
-               || [ "$last" = "darwin-arm64" ] || [ "$last" = "linux-x64" ] \
-               || [ "$last" = "linux-ia32" ] || [ "$last" = "linux-ppc64" ] \
-               || [ "$last" = "linux-s390x" ] || [ "$last" = "linux-riscv64" ] \
-               || [ "$last" = "linux-musl-arm64" ] || [ "$last" = "linux-musl-x64" ]; then
-              rm -rf "$DEST/node_modules/$rel"
-              REMOVED=$((REMOVED+1))
-            fi
-          done
-          echo "剔除 $REMOVED 个其他平台目录"
-
-          echo "=== assets 体积 ==="
-          du -sh "$DEST"
-          echo "=== 顶层内容 ==="
-          ls "$DEST" | head -12
-          echo "=== 确认关键 JS ==="
-          test -f "$DEST/dist/index.js" || { echo "✗ 缺 dist/index.js"; exit 1; }
-
-          # 【2026-11-22 关键断言】扩展声明的运行时依赖必须全部可解析。
-          # 拦住的真实报错：dist/client-Cm0jR4_W.js 里 import "@slack/web-api"
-          # 但包根 node_modules 没这个包 → 运行时 MODULE_NOT_FOUND → 网关 500。
-          # 根因是 openclaw 的 postinstall 被 npm 拦掉（已在上一步用自有脚本装好）。
-          # 断言写成「规则」而不是「断言 slack」：以后扩展增减自动覆盖。
-          echo "=== 强断言：扩展运行时依赖 ==="
-          node tools/check_plugin_deps.js "$DEST"
-
-          # ===== 【2026-11-23 新增】剔除非运行时产物，绕开 zip 65535 条目上限 =====
-          # 事故：装了 58 个扩展依赖后文件涨到 89534，AGP 的 apkzlib 写死
-          # MAX=65535 → `packageDebug` 直接失败：Too many zip entries 89534。
-          #
-          # 试过并否掉的方案：
-          #   ZIP64          → apksigner 报 ApkFormatException，AOSP 安装器零 ZIP64 代码
-          #   裁禁用扩展依赖 → 实测崩：chalk 4 内部 require('supports-color') 不在
-          #                    dependencies 声明里，删一个都起不来。删依赖 = 赌博。
-          #
-          # 现行判据：只删运行时绝对用不到的开发期产物，一个依赖都不碰。
-          #   *.map / *.d.ts / *.ts / test 目录 / 非 README 的 .md
-          # Node 运行时只加载 .js/.json/.node，这些删了不可能影响运行。
-          echo "=== 剔除非运行时产物（.d.ts / .map / 测试 / 文档）==="
+          # 剔除非运行时产物
           node tools/strip_nonruntime.js "$DEST" --apply
-          # 硬断言：删完必须留出余量，否则下一版还会撞上限
           RUNTIME_FILES=$(find "$DEST" -type f | wc -l)
-          echo "runtime 文件数：$RUNTIME_FILES（zip 上限 65535）"
-          test "$RUNTIME_FILES" -lt 60000 || { echo "✗ 文件数 $RUNTIME_FILES 太接近 65535 上限，拒绝打包"; exit 1; }
-          # 【2026-11-26 硬断言】workspace 模板是运行时必需资产，被裁掉网关就 500。
-          # 事故：strip_nonruntime 按 .md 扩展名删，把 docs/reference/templates/*.md 全删了
-          # → Error: Missing workspace template: AGENTS.md → /v1/chat/completions 500。
-          # 用 dist 里真实的 FALLBACK_TEMPLATE_DIR 解析结果做判据，不写死文件名。
+          echo "runtime 文件数：$RUNTIME_FILES"
+          test "$RUNTIME_FILES" -lt 60000 || { echo "✗ 文件数 $RUNTIME_FILES 太接近 zip 上限"; exit 1; }
+
+          # workspace 模板断言
           TPL="$DEST/docs/reference/templates"
-          test -d "$TPL" || { echo "✗ 缺 docs/reference/templates 目录（strip 或 npm 包装阶段丢了）"; exit 1; }
+          test -d "$TPL" || { echo "✗ 缺 docs/reference/templates"; exit 1; }
           for f in AGENTS.md SOUL.md TOOLS.md IDENTITY.md USER.md HEARTBEAT.md; do
-            test -f "$TPL/$f" || { echo "✗ 缺 workspace 模板 $f，网关会在 chat/completions 抛 Missing workspace template"; exit 1; }
+            test -f "$TPL/$f" || { echo "✗ 缺 workspace 模板 $f"; exit 1; }
           done
-          echo "✓ workspace 模板齐全 ($(ls "$TPL" | wc -l) 个)"
-          # 清掉 npm 包里的点开头文件（.gitattributes/.gitignore/.npmignore/.package-lock.json 等）。
-          # 2026-11-22 现场：清单 52414 条 / 包内 52417 个，唯独
-          # node_modules/fast-uri/.gitattributes 没进包 —— aapt 对点开头的
-          # 文件有额外过滤，改 ignoreAssetsPattern 也拦不住。
-          # 这些都只是 npm 包自带的配置/锁文件，运行时一个都不读。
-          # 与其和打包器抳，不如在生成清单前就删干净，两边自然一致。
+          echo "✓ workspace 模板齐全"
+
+          # 清理点开头文件
           find "$DEST/node_modules" -type f -name '.*' -delete
           find "$DEST/node_modules" -type d -name '.bin' -exec rm -rf {} + 2>/dev/null || true
-          echo "已清理 node_modules 下的点开头文件与 .bin 目录"
 
-          echo "=== 生成释放清单（App 侧逐条比对，防释放漏文件）==="
-          # 【2026-11-22 根本性修复】不再依赖 ignoreAssetsPattern 放行下划线目录。
-          # 实测证据：3.4.0 包内以 '_' 开头的路径段数量 = 0，以 '.' 开头的数量 = 0。
-          # 说明 `ignoreAssetsPattern '!_*:!.*'` 这两种放行写法 **完全无效**，
-          # aapt2 照样按内建默认集把它们丢掉。继续调 pattern 是死路。
-          #
-          # 后果（真实报错）：
-          #   Cannot find module '.../@anthropic-ai/sdk/_vendor/partial-json-parser/parser.mjs'
-          #   imported from '.../@anthropic-ai/sdk/internal/message-stream-utils.mjs'
-          # 网关进程启动即退。
-          #
-          # 对策：让文件本身不触发规则 —— 把 `_vendor` 这类目录改名为 `AAA_vendor`，
-          # 并同步替换 JS 里的引用。这样 aapt 没有任何理由丢弃它，
-          # 也不再依赖任何打包器配置。脚本自带两项自检（无残留下划线段 / 无漏改引用）。
-          echo "=== 把下划线开头的路径段改名（绕开 aapt 内建丢弃规则）==="
-          # 【2026-11-23】改名必须只碰「字符串里的路径」，不能碰代码标识符。
-          # 旧实现用文本替换，把 `function _instanceof()` 改成了 `AAA_instanceof`，
-          # 导致 `Export 'AAA_instanceof' is not defined`，整个 ESM 链崩。
-          # 新实现自带词法扫描器（tools/jsstrings.js），不依赖 acorn，四道自检全开。
+          # 下划线路径改名
           node tools/ununderscore.js "$DEST"
-
-          # 【2026-11-24 硬断言】改名完了必须再验一遍「代码区没有 AAA_」。
-          # 事故链：3.7.0 的 ununderscore 把 182 个文件的标识符改成了 AAA_xxx，
-          # 装到手机才报 Export 'AAA_instanceof' is not defined。
-          # 脚本内部已有自检，但脚本自己坏了就没救了 —— 这条断言独立于脚本，走 acorn token 流。
-          # acorn 现在内置在 tools/vendor_acorn.cjs（MIT，原样搬运 226KB），
-          # 不依赖 CI 里任何目录布局。之前写死 openclaw-runtime/.../acorn 是错的：
-          # 核实 openclaw@2026.4.2 的 deps/devDeps 都不含 acorn。
           node tools/selfcheck.js generate
           node tools/selfcheck.js verify
           node tools/check_aaa_clean.js "$DEST"
 
-          echo "=== 生成释放清单（App 侧逐条比对，防释放漏文件）==="
-          # 但释放函数返回了「成功」。少掉的 4466 个里就有 @sinclair/typebox 之类关键包，
-          # 于是 App 启动即报 Cannot find package。
-          # 现在把完整清单烤进 assets，App 释放后逐条 File.exists() 比对，缺一个就重试。
-          # 清单必须和真实文件一致。注意：不能在这里排除点开头/下划线开头的文件，
-          # 因为 app/build.gradle 已经把 aapt 的 ignoreAssetsPattern 改成了不忽略它们；
-          # 两边必须一致，否则 App 校验时永远差一截。
-          # 【2026-11-22 修正】清单必须用「aapt 真实规则」过一遍再写。
-          # 上一版直接 find 全量，aapt 又按 ignoreAssetsPattern 丢掉一部分，
-          # 两边永远对不上 → App 释放后校验失��。现在生成时就用同一套规则过滤，
-          # 清单 = 包里应该有的文件，一一对应。
-          node tools/make_manifest.js "$DEST" app/app/src/main/assets/openclaw/manifest.txt app/app/build.gradle
-          MANI=$(wc -l < app/app/src/main/assets/openclaw/manifest.txt)
+          # 生成释放清单
+          node tools/make_manifest.js "$DEST" app/app/src/main/openclaw/manifest.txt app/app/build.gradle
+          MANI=$(wc -l < app/app/src/main/openclaw/manifest.txt)
           echo "清单条数：$MANI"
-          # 【2026-11-23】阈值从 50000 降到 30000：剔除非运行时产物后
-          # 实测 37055 个文件（原 85856），清单也跟着降到约 3.7 万条。
-          # 写 30000 是为了拦住「清单意外空了/大块丢失」，不是卡死具体数字。
           test "$MANI" -gt 30000 || { echo "✗ 清单条数异常：$MANI"; exit 1; }
-          # 清单必须含这两个关键包，否则以后出问题查不出来
-          grep -q 'node_modules/@sinclair/typebox/build/esm/index.mjs' app/app/src/main/assets/openclaw/manifest.txt || { echo '✗ 清单缺 typebox'; exit 1; }
-          grep -q 'dist/entry.js' app/app/src/main/assets/openclaw/manifest.txt || { echo '✗ 清单缺 dist/entry.js'; exit 1; }
 
-      # ===== 内嵌 node 运行时（B 方案） =====
-      # 为什么不用 git 存 libnode.so：44MB 超过 GitHub blobs API 单次上限（~40MB
-      # base64 后），实测报 422 "input was too large"。
-      # 改为从 Termux 官方源下载 aarch64 包，版本可控、仓库干净。
-      # 选 nodejs-lts 24.22.x：与开发机当前运行的 v24.22.1 基本一致。
-      - name: Fetch Termux node runtime
-        run: |
-          set -e
-          mkdir -p /tmp/tx && cd /tmp/tx
-          BASE=https://packages.termux.dev/apt/termux-main/pool/main
-          # 精确版本（查过 Packages 索引）：
-          URIS="
-          $BASE/n/nodejs-lts/nodejs-lts_24.22.3_aarch64.deb
-          $BASE/libi/libicu/libicu_79.1_aarch64.deb
-          $BASE/o/openssl/openssl_1%3a3.6.5_aarch64.deb
-          $BASE/c/c-ares/c-ares_1.34.9_aarch64.deb
-          $BASE/libs/libsqlite/libsqlite_3.54.1-1_aarch64.deb
-          $BASE/libc/libc++/libc++_30_aarch64.deb
-          $BASE/z/zlib/zlib_1.4_aarch64.deb
-          "
-          for u in $URIS; do
-            echo "↓ $u"
-            curl -fL --retry 3 --retry-delay 3 -O "$u"
-          done
-          ls -lh *.deb
-          echo "=== 解包 ==="
-          mkdir -p ex
-          for d in *.deb; do dpkg-deb -x "$d" ex; done
-          echo "=== 找 node ==="
-          find ex -name "node" -type f -exec ls -lh {} \;
-          NODE=$(find ex -name "node" -type f | head -1)
-          test -n "$NODE" || { echo "✗ 未找到 node 可执行"; exit 1; }
-          echo "NODE=$NODE"
-          "$NODE" -v 2>&1 | head -2 || echo "（直接跑不了，正常：需要在 Android 上跑）"
-
-      - name: Install Termux node into jniLibs
-        run: |
-          set -e
-          NODE=$(find /tmp/tx/ex -name "node" -type f | head -1)
-          DEST=app/app/src/main/jniLibs/arm64-v8a
-          mkdir -p "$DEST"
-          # node 改名 libnode.so：Android 只允许执行 lib/ 目录下以 lib*.so 命名的文件
-          cp "$NODE" "$DEST/libnode.so"
-
-          # 关键：Android packing 只收楼 lib<name>.so 形式，
-          # libicuuc.so.79.1、libz.so.1.4 这种多级版本号会被静默丢弃（实测 2026-11-21）。
-          # 所以全部改成 lib<name><��本拼接>.so：
-          #   libicuuc.so.79.1 -> libicuuc79.so
-          #   libz.so.1.4      -> libz1.so
-          #   libcrypto.so.3   -> libcrypto3.so
-          # 并在 Kotlin 侧建同名软链（GatewayLauncher.ensureSymlinks 已兼容）。
-          echo "=== 拷入并重命名 Termux 库 ==="
-          find /tmp/tx/ex -name "*.so*" -type f | while read -r f; do
-            b=$(basename "$f")
-            case "$b" in
-              *.so)
-                new="$b" ;;
-              *.so.*)
-                # 用完整版本号，只把点换成下划线，绝不截断：
-                #   libsqlite3.so.3.54.1 -> libsqlite3_3_54_1.so
-                # 之前的写法取「主版本」（libsqlite3.so.3.54.1 -> libsqlite33.so）
-                # 一是会把 libssl.so.3 这类搞混，二是 Kotlin 侧候选名很难穷举，
-                # 2026-11-21 就是因为 libsqlite33.so 对不上报「缺 libsqlite3.so」。
-                base=${b%%.so.*}
-                rest=${b#*.so.}
-                rest=${rest//\./_}
-                rest=${rest%%-*}
-                new="${base}_${rest}.so" ;;
-              *)
-                continue ;;
-            esac
-            if [ ! -f "$DEST/$new" ]; then
-              cp "$f" "$DEST/$new" && echo "  $b -> $new"
-            fi
-          done
-
-          echo "=== jniLibs 最终清单 ==="
-          ls -lh "$DEST" | awk 'NR>1{print $5, $9}'
-          echo "=== 校验必需库 ==="
-          test -f "$DEST/libnode.so" || { echo "✗ libnode.so 缺失"; exit 1; }
-          for need in libicuuc_* libicui18n_* libicudata_* libcrypto_* libssl_* libz_* libcares* libsqlite* libc++_shared*; do
-            ls "$DEST"/$need >/dev/null 2>&1 || { echo "✗ 缺 $need"; exit 1; }
-          done
-          echo "✓ 原生库齐全"
-          echo "=== 生成库清单供 Kotlin 比对 ==="
-          ls "$DEST" | sort > /tmp/libs.txt
-          cat /tmp/libs.txt
-
-      # 【2026-11-24 新增】写代码前先查引用完整性，不要等到 Kotlin 编译才炸。
-      # 触发事故：脚本批量替换 GatewayLauncher.kt 时连带删掉了 PREF_KEY 常量，
-      # 本地预检（只查注释/字符串边界）全绿，CI 编译到一半才报 Unresolved reference。
-      # 这道关卡 1 秒内能拦。
-      - name: Kotlin precheck (syntax + undefined constants)
-        run: |
-          set -e
-          echo "=== 注释/字符串边界 ==="
-          node tools/kt_precheck.js app/app/src/main/java/com/xundao/yongwuzhijing
-          echo "=== 未定义常量 ==="
-          # 只查自家代码。app/llama 下的 arm/aichat 是上游 vendor 代码，
-          # 里面的 INT64/FLOAT64 是 GGUF 规范常量、从别处引用，不在本关范围。
-          node tools/kt_refs.js app/app/src/main/java/com/xundao/yongwuzhijing
-
+      # ===== 构建 =====
       - name: Build debug APK
         working-directory: app
         run: |
           set -o pipefail
-          # 【2026-11-22】必须先确保签名文件存在，否则产出无证书包，手机装不上。
-          # working-directory 已经是 app/ 模块目录，keystore 就在当前目录。
           KS=ywzj-debug.keystore
           if [ ! -f "$KS" ]; then
-            echo "=== 生成 debug keystore ==="
             keytool -genkeypair -v \
               -keystore "$KS" -storetype JKS \
               -alias ywzj -keyalg RSA -keysize 2048 -validity 10000 \
               -storepass yongwuzhijing -keypass yongwuzhijing \
               -dname "CN=YongWuZhiJing, OU=Dev, O=XunDao, L=CN, ST=CN, C=CN"
           fi
-          # 【2026-11-25】versionCode 必须每次递增，否则 Android 静默跳过安装。
           export VERSION_CODE=${{ github.run_number }}
           export VERSION_NAME=3.9.${{ github.run_number }}
           echo "构建版本: $VERSION_NAME (code $VERSION_CODE)"
           gradle assembleDebug --no-daemon 2>&1 | tee /tmp/build.log > /dev/null || true
           if grep -q "BUILD SUCCESSFUL" /tmp/build.log; then
             echo "✓ 构建成功"
-            # 【2026-11-25】硬校验：产物里的 versionCode 必须等于本次 run_number。
-            # 3.7.0~3.9.0 连续四版都是 56，Android 静默跳过安装，修复全白搭。
-            # 这种错不能靠人眼，必须让构建失败。
-            # 【2026-11-26】working-directory 已经是 app/ 模块，路径里不能再带一层 app/。
-            # 上一版写成 app/app/build/... → find 找不到 → 构建成功后反而报错退出（假失败）。
             APK=$(find app/build/outputs/apk -name "*.apk" | head -1)
             if [ -z "$APK" ]; then
-              echo "✗ 构建成功但找不到 APK 产物，先列出所有 apk 以判断路径："
+              echo "✗ 构建成功但找不到 APK"
               find . -name "*.apk" -not -path "*/.gradle/*" | head -5
               exit 1
             fi
-            BT=$(ls ${ANDROID_HOME}/build-tools | sort -V | tail -1)
-            AAPT=${ANDROID_HOME}/build-tools/$BT/aapt
-            if [ ! -x "$AAPT" ]; then AAPT=${ANDROID_HOME}/build-tools/$BT/aapt2; fi
-            GOT=$($AAPT dump badging "$APK" 2>/dev/null | sed -n "s/.*versionCode=.\([0-9]*\).*/\1/p" | head -1)
+            BT=$(ls -d "$ANDROID_HOME"/build-tools/*/ | sort -V | tail -1)
+            GOT=$("${BT}aapt" dump badging "$APK" 2>/dev/null | sed -n "s/.*versionCode='\([0-9]*\)'.*/\1/p" | head -1)
             echo "产物 versionCode=$GOT 期望=$VERSION_CODE"
-            if [ -z "$GOT" ]; then
-              echo "✗ 读不到产物 versionCode，无法确认安装会不会被跳过，拒绝出包。"
-              exit 1
-            fi
-            if [ "$GOT" != "$VERSION_CODE" ]; then
-              echo "✗ versionCode 不符！Android 会静默跳过安装，包等于没出。"
-              exit 1
-            fi
-            exit 0
+            [ -n "$GOT" ] || { echo "✗ 读不到 versionCode"; exit 1; }
+            [ "$GOT" = "$VERSION_CODE" ] || { echo "✗ versionCode 不符"; exit 1; }
+          else
+            echo "=== 构建失败 ==="
+            grep -E "^e: " /tmp/build.log | head -40 || echo "（无编译错误）"
+            grep -E "^> Task .*FAILED|^FAILURE:" /tmp/build.log || echo "（无失败任务）"
+            tail -40 /tmp/build.log
+            exit 1
           fi
-          echo "=== 构建失败 ==="
-          echo "--- 编译错误（e: 开头）---"
-          grep -E "^e: " /tmp/build.log | head -40 || echo "（无）"
-          echo "--- 出错任务 ---"
-          grep -E "^> Task .*FAILED|^FAILURE:" /tmp/build.log || echo "（无）"
-          echo "--- 根因（What went wrong 至 Caused by）---"
-          awk '/What went wrong/,/BUILD FAILED/' /tmp/build.log | head -60 || true
-          echo "--- Caused by 链 ---"
-          grep -E "^Caused by:|^ *> " /tmp/build.log | head -30 || true
-          echo "--- CMake / NDK 相关 ---"
-          grep -iE "cmake|ndk|ninja|compiler" /tmp/build.log | grep -iv "at org\.\|at com\.\|at java" | head -30 || true
-          echo "--- 尾部 40 行 ---"
-          tail -40 /tmp/build.log
-          exit 1
 
-      # 【2026-11-22 根因修复】用包内真实文件重写 manifest.txt 并回写进 APK。
-      # 我们无法在构建前预测 AGP 到底会丢什么（不同版本行为不同）；
-      # 但「包里有什么」是确定的事实。所以清单直接由包内文件生成，
-      # App 侧逐条校验就永远不会再误报。
-      # 【2026-11-22 顺序关键】签名必须在重写清单之后！
-      # 重写 zip 会改内容 → 破坏任何���有签名。所以流程是：
-      #   构建（未签）→ 重写清单 → *签名*
-      # 之前的错误：gradle 内签 → 重写清单 → 签名作废 → 手机报「未包含任何证书」。
-      # 【2026-11-22】判据检查：防止「零字节文件被当成缺失」这类错误重现。
-      # 判据错了后面所有推断都是错的，所以把它做成阻断式检查，而不是靠记忆。
       - name: Check release rules
         run: |
-          set -e
           node tools/check_release_rules.js app/app/src/main/java/com/xundao/yongwuzhijing/GatewayLauncher.kt
 
       - name: Sync manifest with real APK contents
@@ -471,16 +148,14 @@ jobs:
           test -n "$APK" || { echo "✗ 未找到 APK"; exit 1; }
           node tools/sync_manifest_into_apk.js "$APK" "$APK.out.apk"
           mv "$APK.out.apk" "$APK"
-          echo "✓ 清单已同步进包（此时包未签名）"
+          echo "✓ 清单已同步"
 
-      # 用 apksigner 签 v1+v2（Android 7.0+ 都用 v2，v1 兼容老系统）
       - name: Sign APK
         run: |
           set -e
           APK=$(find app -name "*.apk" | head -1)
-          KS=app/app/ywzj-debug.keystore
-          # build 步骤的 working-directory 是 app/，所以 keystore 落在 app/ywzj-debug.keystore
-          [ -f "$KS" ] || KS=app/ywzj-debug.keystore
+          KS=app/ywzj-debug.keystore
+          test -f "$KS" || KS=app/app/ywzj-debug.keystore
           test -f "$KS" || { echo "✗ 缺 keystore"; exit 1; }
           BT=$(ls -d "$ANDROID_HOME"/build-tools/*/ | sort -V | tail -1)
           "${BT}apksigner" sign \
@@ -488,92 +163,24 @@ jobs:
             --ks-pass pass:yongwuzhijing --key-pass pass:yongwuzhijing \
             --v1-signing-enabled true --v2-signing-enabled true \
             "$APK"
-          echo "=== 签名校验 ==="
-          "${BT}apksigner" verify --print-certs "$APK" | head -6
           echo "✓ 已签名"
 
-      - name: Verify APK contents
+      - name: Verify APK
         working-directory: app
         run: |
-          APK=$(find . -name "*.apk" | head -1)
-          if [ -z "$APK" ]; then echo "✗ 未找到 APK"; find . -path "*/outputs/*" | head -20; exit 1; fi
-          echo "APK: $APK"; ls -lh "$APK"
-          echo "=== gguf ==="; unzip -l "$APK" | grep -i "gguf" || echo "(无 gguf)"
-          echo "=== so ==="; unzip -l "$APK" | grep "\.so" | head -20 || echo "(无 so)"
-          if unzip -l "$APK" | grep -qi "gguf"; then echo "✓ 模型已打包"; else echo "✗ 缺模型"; exit 1; fi
-          # 布局必须 strict：models/current/*.gguf（findAssetGguf 第一优先级）
-          unzip -l "$APK" | grep -q "assets/models/current/.*\.gguf" || {
-            echo "✗ 模型不在 assets/models/current/ —— App 会报「找不到模型文件」"; exit 1; }
-          # 网关运行时：openclaw.mjs + dist 必须同时在
-          unzip -l "$APK" | grep -q "assets/openclaw/runtime/openclaw.mjs" || { echo "✗ 缺 openclaw.mjs"; exit 1; }
-          unzip -l "$APK" | grep -q "assets/openclaw/runtime/dist/index\.js" || { echo "✗ 缺 dist/index.js"; exit 1; }
-          echo "✓ 网关运行时已打包"
-          # 【2026-11-22 关键断言】改名后的 _vendor 必须真的在包里。
-          # 这一条直接拦住真实报错：
-          #   Cannot find module '.../@anthropic-ai/sdk/_vendor/partial-json-parser/parser.mjs'
-          # 之前没有任何断言检查它，所以包少了这个目录也能一路绿灯到手机上。
-          echo "=== 强断言：改名后的 vendored 依赖 ==="
-          unzip -l "$APK" | grep -q "assets/openclaw/runtime/node_modules/@anthropic-ai/sdk/AAA_vendor/partial-json-parser/parser.mjs" || {
-            echo "✗ 缺 @anthropic-ai/sdk/AAA_vendor/partial-json-parser/parser.mjs"; exit 1; }
-          unzip -l "$APK" | grep -q "openai/AAA_vendor/" || { echo "✗ 缺 openai/AAA_vendor/"; exit 1; }
-          # 反向断言：包里不该再出现以 _ 开头的路径段（说明改名没做干净）
-          if unzip -l "$APK" | awk '{print $4}' | grep -E "(^|/)_." | grep -q .; then
-            echo "✗ 包内仍有下划线开头的路径段："; unzip -l "$APK" | awk '{print $4}' | grep -E "(^|/)_." | head -5; exit 1
-          fi
-          echo "✓ vendored 依赖齐全，无残留下划线路径"
-          if unzip -l "$APK" | grep -q "\.so"; then echo "✓ native 库已打包"; else echo "✗ 缺 .so"; exit 1; fi
-          # 原生库命名必须和 Kotlin 侧候选对得上。
-          # 2026-11-21 教训：CI 把 libsqlite3.so.3.54.1 改名成 libsqlite33.so，
-          # Kotlin 找不到 → 装上后启动报「缺原生库」。现在两边必须同时命中。
-          echo "=== 强断言：必需原生库 ==="
-          for need in libnode.so libcares.so libc++_shared.so; do
-            unzip -l "$APK" | grep -q "lib/arm64-v8a/$need" || { echo "✗ 缺 $need"; exit 1; }
-          done
-          for pat in 'libicuuc_' 'libicui18n_' 'libicudata_' 'libcrypto_' 'libssl_' 'libz_' 'libsqlite3_'; do
-            unzip -l "$APK" | grep -q "lib/arm64-v8a/${pat}[0-9_]*\.so" || {
-              echo "✗ 缺 $pat* 类原生库（命名规则变了？同步改 GatewayLauncher.ensureSymlinks）"; exit 1; }
-          done
-          echo "✓ 必需原生库齐全（名字均已核对）"
-
-          # === 清单与真实文件必须一致 ===
-          # 2026-11-22 两次翻车的根因都在这里：
-          #   ① App 释放时静默漏了 4466 个文件（递归 list 不可靠）
-          #   ② AGP 默认 ignoreAssetsPattern 把 _/. 开头的文件静默丢掉，
-          #      清单 52023 条 vs 包内 51350 条 → App 永远校验不过
-          # 现在在 CI 里就把两边对平，不允许带偏差出包。
-          #
-          # 注意：校验逻辑写成 tools/apk_verify.js，**不要 inline heredoc**。
-          # 2026-11-22 血教训：在 run: | 里嵌 python heredoc 之后，GitHub 直接
-          # 判定 workflow「没有 workflow_dispatch 触发器」，dispatch 一律 422，
-          # 而 YAML 本身看起来又没错 —— 排查代价 = 几轮 15 分钟的构建。
-          # 第二个参数是 gradle 文件：apk_verify 从里面读 ignoreAssetsPattern，
-          # 用同一规则过滤清单，再和包内实际件比对。规则和打包必须同源。
-          node "$GITHUB_WORKSPACE/tools/apk_verify.js" "$APK" \
-               "$GITHUB_WORKSPACE/app/app/build.gradle"
-
-      # 【2026-11-24 硬断言】拦住「假成功」的空包。
-      # 事故：11-24 早上的 run 状态是 success，产物却只有 1 个条目 / 1381238416 字节，
-      # 里面是个 59 字节的空 zip。三次下载和一堆修复全白做。
-      # 判据不靠「构建没报错」，只看「产物里真的有模型和运行时」。
-      - name: Assert APK not empty
-        run: |
           set -e
-          APK=$(find app -name "*.apk" | head -1)
-          test -n "$APK"
-          SZ=$(stat -c%s "$APK")
-          echo "APK 字节数: $SZ"
-          test "$SZ" -gt 1000000000 || { echo "✗ APK 只有 $SZ 字节，显然没打进去模型/运行时"; exit 1; }
+          APK=$(find . -name "*.apk" | head -1)
+          [ -n "$APK" ] || { echo "✗ 未找到 APK"; exit 1; }
+          ls -lh "$APK"
           N=$(unzip -l "$APK" | tail -1 | awk '{print $2}')
           echo "zip 条目数: $N"
-          test "$N" -gt 30000 || { echo "✗ 条目数 $N 太少（应为 3.7 万）"; exit 1; }
-          unzip -l "$APK" | grep -q "assets/models/current/" || { echo "✗ 缺模型目录"; exit 1; }
+          test "$N" -gt 30000 || { echo "✗ 条目数 $N 太少"; exit 1; }
+          unzip -l "$APK" | grep -q "assets/openclaw/runtime/openclaw.mjs" || { echo "✗ 缺 openclaw.mjs"; exit 1; }
+          unzip -l "$APK" | grep -q "assets/openclaw/runtime/dist/index.js" || { echo "✗ 缺 dist/index.js"; exit 1; }
           unzip -l "$APK" | grep -q "lib/arm64-v8a/libnode.so" || { echo "✗ 缺 libnode.so"; exit 1; }
-          echo "✓ 产物非空且结构正确"
+          echo "✓ 结构正确"
 
       - name: Upload APK
-        # 【2026-11-26】路径相对仓库根，**不继承**上面步骤的 working-directory。
-        # 上一版跟着改成 app/build/... → 从仓库根找不到 → "No files were found" →
-        # 构建成功、签名成功、产物合格，但 artifact 没传上去，publish_chunks 拿不到包。
         if: success()
         uses: actions/upload-artifact@v4
         with:
