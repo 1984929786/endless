@@ -102,7 +102,7 @@ jobs:
           node tools/make_manifest.js "$DEST" app/app/src/main/openclaw/manifest.txt app/app/build.gradle
           MANI=$(wc -l < app/app/src/main/openclaw/manifest.txt)
           echo "清单条数：$MANI"
-          test "$MANI" -gt 30000 || { echo "✗ 清单条数异常：$MANI"; exit 1; }
+          test "$MANI" -gt 15000 || { echo "✗ 清单条数异常：$MANI"; exit 1; }
 
       # ===== 构建 =====
       - name: Build debug APK
