@@ -40,7 +40,7 @@ jobs:
         working-directory: openclaw-runtime
         run: |
           set -e
-          npm install --no-audit --no-fund --os=linux --cpu=arm64
+          npm install --no-audit --no-fund
           test -f node_modules/openclaw/openclaw.mjs
           test -d node_modules/openclaw/dist
           echo "✓ openclaw.mjs + dist 就绪"
