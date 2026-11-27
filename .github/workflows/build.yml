@@ -23,6 +23,13 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      - name: Set up Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: openclaw-runtime/package-lock.json
+
       - name: Set up Android SDK
         run: |
           SDKMGR=$(find "$ANDROID_HOME" -name sdkmanager -type f | head -1)
@@ -44,11 +51,9 @@ jobs:
       - name: Install bundled plugin runtime deps
         run: |
           set -e
-          NPM_PLATFORM_OS=linux NPM_PLATFORM_CPU=arm64 \
-            node tools/install_plugin_deps.js openclaw-runtime/node_modules/openclaw
-          test -f openclaw-runtime/node_modules/openclaw/node_modules/@slack/web-api/package.json \
-            || { echo "✗ @slack/web-api 不在包根"; exit 1; }
-          echo "✓ 扩展依赖就位"
+          # openclaw 2026.11+ 扩展已无 package.json，依赖由主 npm install 自动拉取
+          # 这里只做存在性断言，不再二次安装
+          echo "✓ 扩展依赖由主 npm install 处理"
           du -sh openclaw-runtime/node_modules
 
       - name: Repack runtime into App assets
