@@ -93,22 +93,26 @@ jobs:
           find "$DEST/node_modules" -type d -name '.bin' -exec rm -rf {} + 2>/dev/null || true
 
           # 下划线路径改名
-          echo '--- ununderscore ---'
+          set +e
           node tools/ununderscore.js "$DEST" 2>&1 | tee /tmp/repack.log
-          echo '--- selfcheck generate ---'
+          UNU_EXIT=${PIPESTATUS[0]}
           node tools/selfcheck.js generate 2>&1 | tee -a /tmp/repack.log
-          echo '--- selfcheck verify ---'
-          node tools/selfcheck.js verify 2>&1 | tee -a /tmp/repack.log || { echo "✗ selfcheck verify 失败"; cat /tmp/repack.log; exit 1; }
-          echo '--- check_aaa_clean ---'
-          node tools/check_aaa_clean.js "$DEST" 2>&1 | tee -a /tmp/repack.log || { echo "✗ check_aaa_clean 失败"; cat /tmp/repack.log; exit 1; }
-          echo '--- make_manifest ---'
-          node tools/make_manifest.js "$DEST" app/app/src/main/openclaw/manifest.txt app/app/build.gradle 2>&1 | tee -a /tmp/repack.log || { echo "✗ make_manifest 失败"; cat /tmp/repack.log; exit 1; }
+          node tools/selfcheck.js verify 2>&1 | tee -a /tmp/repack.log
+          SC_EXIT=${PIPESTATUS[0]}
+          node tools/check_aaa_clean.js "$DEST" 2>&1 | tee -a /tmp/repack.log
+          CA_EXIT=${PIPESTATUS[0]}
+          node tools/make_manifest.js "$DEST" app/app/src/main/openclaw/manifest.txt app/app/build.gradle 2>&1 | tee -a /tmp/repack.log
+          MM_EXIT=${PIPESTATUS[0]}
+          set -e
+          if [ "$UNU_EXIT" -ne 0 ]; then echo "✗ ununderscore 失败"; exit 1; fi
+          if [ "$SC_EXIT" -ne 0 ]; then echo "✗ selfcheck 失败"; exit 1; fi
+          if [ "$CA_EXIT" -ne 0 ]; then echo "✗ check_aaa_clean 失败"; exit 1; fi
+          if [ "$MM_EXIT" -ne 0 ]; then echo "✗ make_manifest 失败"; exit 1; fi
 
-          # 生成释放清单
-          node tools/make_manifest.js "$DEST" app/app/src/main/openclaw/manifest.txt app/app/build.gradle
           MANI=$(wc -l < app/app/src/main/openclaw/manifest.txt)
           echo "清单条数：$MANI"
           test "$MANI" -gt 15000 || { echo "✗ 清单条数异常：$MANI"; exit 1; }
+          echo "✓ Repack 全部完成"
 
       # ===== 构建 =====
       - name: Build debug APK
