@@ -40,19 +40,20 @@ jobs:
         working-directory: openclaw-runtime
         run: |
           set -e
-          npm install --no-audit --no-fund
-          test -f node_modules/openclaw/openclaw.mjs
-          test -d node_modules/openclaw/dist
-          echo "✓ openclaw.mjs + dist 就绪"
-          du -sh node_modules
+          # 直接下载 tgz 解压，避免 npm install hoisting 导致文件布局变化
+          curl -fsSL -o openclaw.tgz https://registry.npmjs.org/openclaw/-/openclaw-2026.11.10.tgz
+          tar -xzf openclaw.tgz --strip-components=1
+          rm openclaw.tgz
+          test -f node_modules/openclaw/openclaw.mjs || test -f openclaw.mjs
+          test -d dist
+          echo "✓ openclaw runtime 解压就绪"
+          du -sh .
 
       - name: Install bundled plugin runtime deps
         run: |
           set -e
-          # openclaw 2026.11+ 扩展已无 package.json，依赖由主 npm install 自动拉取
-          # 这里只做存在性断言，不再二次安装
-          echo "✓ 扩展依赖由主 npm install 处理"
-          du -sh openclaw-runtime/node_modules
+          echo "✓ 无需二次安装（tgz 已包含所有运行时文件）"
+          du -sh openclaw-runtime
 
       - name: Repack runtime into App assets
         run: |
