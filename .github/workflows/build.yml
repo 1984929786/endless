@@ -44,7 +44,20 @@ jobs:
           curl -fsSL -o openclaw.tgz https://registry.npmjs.org/openclaw/-/openclaw-2026.11.10.tgz
           tar -xzf openclaw.tgz --strip-components=1
           rm openclaw.tgz
-          test -f node_modules/openclaw/openclaw.mjs || test -f openclaw.mjs
+
+          # --strip-components=1 把文件解压到了根目录，需要重组为 node_modules/openclaw/ 结构
+          if [ ! -d "node_modules/openclaw" ]; then
+            mkdir -p node_modules/openclaw
+            for f in openclaw.mjs cli-*.mjs gateway-*.mjs node-*.mjs runtime-*.mjs standalone-*.mjs worker-*.mjs; do
+              [ -f "$f" ] && mv "$f" node_modules/openclaw/
+            done
+            for d in dist docs reference skills src patches; do
+              [ -d "$d" ] && mv "$d" node_modules/openclaw/
+            done
+            cp package.json pnpm-workspace.yaml node_modules/openclaw/ 2>/dev/null || true
+          fi
+
+          test -f node_modules/openclaw/openclaw.mjs
           test -d dist
           echo "✓ openclaw runtime 解压就绪"
           du -sh .
