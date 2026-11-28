@@ -45,22 +45,12 @@ jobs:
           tar -xzf openclaw.tgz --strip-components=1
           rm openclaw.tgz
 
-          # --strip-components=1 把文件解压到了根目录，需要重组为 node_modules/openclaw/ 结构
-          if [ ! -d "node_modules/openclaw" ]; then
-            mkdir -p node_modules/openclaw
-            for f in openclaw.mjs cli-*.mjs gateway-*.mjs node-*.mjs runtime-*.mjs standalone-*.mjs worker-*.mjs; do
-              [ -f "$f" ] && mv "$f" node_modules/openclaw/
-            done
-            for d in dist docs reference skills src patches; do
-              [ -d "$d" ] && mv "$d" node_modules/openclaw/
-            done
-            cp package.json pnpm-workspace.yaml node_modules/openclaw/ 2>/dev/null || true
-          fi
-
-          test -f node_modules/openclaw/openclaw.mjs
-          test -d dist
-          echo "✓ openclaw runtime 解压就绪"
-          du -sh .
+        # tgz --strip-components=1 解压后：openclaw.mjs、dist/、docs/ 等在根目录，依赖在 node_modules/ 下
+        # 直接按实际结构复制到 DEST
+        test -f openclaw.mjs
+        test -d dist
+        echo "✓ openclaw runtime 解压就绪"
+        du -sh .
 
       - name: Install bundled plugin runtime deps
         run: |
@@ -71,22 +61,28 @@ jobs:
       - name: Repack runtime into App assets
         run: |
           set -ex
-          SRC=openclaw-runtime/node_modules
-          DEST=app/app/src/main/assets/openclaw/runtime
-          rm -rf "$DEST"
-          mkdir -p "$DEST"
+        SRC=openclaw-runtime
+        DEST=app/app/src/main/assets/openclaw/runtime
+        rm -rf "$DEST"
+        mkdir -p "$DEST"
 
-          cp -r "$SRC"/openclaw/* "$DEST"/
-          test -f "$DEST/openclaw.mjs" || { echo "✗ 缺 openclaw.mjs"; ls "$DEST"; exit 1; }
-          echo "✓ openclaw.mjs 就位"
+        # 复制核心入口和顶层目录（tgz --strip-components=1 后这些在根目录）
+        [ -f "$SRC/openclaw.mjs" ] && cp "$SRC/openclaw.mjs" "$DEST/"
+        for d in dist docs src skills patches custodian-skills scripts reference; do
+          [ -d "$SRC/$d" ] && cp -r "$SRC/$d" "$DEST/"
+        done
+        test -f "$DEST/openclaw.mjs" || { echo "✗ 缺 openclaw.mjs"; ls "$DEST"; exit 1; }
+        echo "✓ openclaw.mjs 就位"
 
-          mkdir -p "$DEST/node_modules"
-          for d in "$SRC"/*; do
+        # 复制 node_modules 依赖
+        mkdir -p "$DEST/node_modules"
+        if [ -d "$SRC/node_modules" ]; then
+          for d in "$SRC/node_modules"/*; do
             b=$(basename "$d")
-            [ "$b" = "openclaw" ] && continue
             cp -r "$d" "$DEST/node_modules/"
           done
-          echo "✓ 依赖复制完成"
+        fi
+        echo "✓ 依赖复制完成"
 
           # 剔除非运行时产物
           node tools/strip_nonruntime.js "$DEST" --apply || exit 1
